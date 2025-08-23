@@ -7,7 +7,7 @@ Tested up to: 6.8
 Requires PHP: 7.0.0
 License: GPLv3
 License URI: http://www.gnu.org/licenses/gpl-3.0.html
-Stable tag: 2.0.19
+Stable tag: 2.0.20
 
 [CheckView](https://checkview.io/) is the friendly WordPress automated testing platform for everyone, from developers, shop owners to agencies.  
 
@@ -85,13 +85,23 @@ Yes, creating a [CheckView.io](https://checkview.io/) account is required - for 
 3. CheckView general settings.
 
 == Changelog ==
+= 2.0.20 =
+* Only run testing code for requests with newly required cookie.
+* Only run relevant test code for the specified test type in the newly required cookie.
+* Add check for WS Forms before attempting to run code.
+* Better handle page ID retrieval.
+* Extract all code from I18n class into a single function.
+* Extract all code from Public class into a single function.
+* Make helper methods of Woo class static.
+* Improve logging.
+
 = 2.0.19 =
-* Improve logging
-* Add hooks for disabling WP Forms CAPTCHAs/Turnstiles for tests
-* Disable test-related hooks on API requests
-* Disable Fluent Forms token-based spam prevention for tests
-* Remove Fluent Forms CAPTCHA/Turnstile key swap
-* Disable Fluent Forms CAPTCHAs using newly provided hook
+* Improve logging.
+* Add hooks for disabling WP Forms CAPTCHAs/Turnstiles for tests.
+* Disable test-related hooks on API requests.
+* Disable Fluent Forms token-based spam prevention for tests.
+* Remove Fluent Forms CAPTCHA/Turnstile key swap.
+* Disable Fluent Forms CAPTCHAs using newly provided hook.
 
 = 2.0.18 =
 * Improve logging when querying for available test results.
@@ -367,6 +377,16 @@ Yes, creating a [CheckView.io](https://checkview.io/) account is required - for 
 * Initial release.
 
 == Upgrade Notice ==
+= 2.0.20 =
+* Only run testing code for requests with newly required cookie.
+* Only run relevant test code for the specified test type in the newly required cookie.
+* Add check for WS Forms before attempting to run code.
+* Better handle page ID retrieval.
+* Extract all code from I18n class into a single function.
+* Extract all code from Public class into a single function.
+* Make helper methods of Woo class static.
+* Improve logging.
+
 = 2.0.19 =
 * Improve logging
 * Add hooks for disabling WP Forms CAPTCHAs/Turnstiles for tests
