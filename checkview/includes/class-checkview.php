@@ -80,7 +80,7 @@ class CheckView {
 		if ( defined( 'CHECKVIEW_VERSION' ) ) {
 			$this->version = CHECKVIEW_VERSION;
 		} else {
-			$this->version = '2.0.20';
+			$this->version = '2.0.29';
 		}
 		$this->plugin_name = 'checkview';
 
@@ -110,15 +110,29 @@ class CheckView {
 	}
 
 	/**
-	 * Determine if the request contains the cookie necessary for running testing code.
+	 * Determine if the request contains the query parameters necessary for detecting test type.
+	 * 
+	 * Legacy: Falls back to the value of `self::$bot_cookie` if it is valid.
 	 *
-	 * Returns one of `woo_checkout`, `form`, or `custom`. False if not set or invalid value.
+	 * Returns one of:
+	 * - "form" - Supported form plugin tests.
+	 * - "custom" - Custom tests.
+	 * - "full_checkout" - WooCommerce full checkout tests.
+	 * - "add_to_cart" - WooCommerce add-to-cart test.
+	 * - "woo_checkout" - WooCommerce full checkout tests (deprecated; from legacy cookie).
+	 * - false - If not set or invalid value.
 	 *
 	 * @return string|false Validated cookie value, or false.
 	 */
-	public static function has_cookie() {
-		$valid_values = array('woo_checkout', 'form', 'custom');
+	public static function test_type() {
+		$test_id = sanitize_text_field( wp_unslash( $_REQUEST['checkview_test_id'] ?? '' ) );
+		$test_type = sanitize_text_field( wp_unslash( $_REQUEST['checkview_test_type'] ?? '' ) );
+		if ( checkview_is_valid_uuid( $test_id ) && ! empty( $test_type ) ) {
+			return $test_type;
+		}
 
+		// Legacy: Cookie support
+		$valid_values = array('woo_checkout', 'form', 'custom');
 		if ( isset( $_COOKIE[self::$bot_cookie] ) && in_array( $_COOKIE[self::$bot_cookie], $valid_values ) ) {
 			return $_COOKIE[self::$bot_cookie];
 		}
@@ -132,19 +146,63 @@ class CheckView {
 	 * @return bool
 	 */
 	public static function is_bot(): bool {
-		$visitor_ip = checkview_get_visitor_ip();
-		$cv_bot_ip = checkview_get_api_ip();
-		$ip_verified = is_array( $cv_bot_ip ) && in_array( $visitor_ip, $cv_bot_ip );
+		$visitor_ip  = checkview_get_visitor_ip();
+		$cv_bot_ip   = checkview_get_api_ip();
+		$is_local    = defined( 'WP_ENVIRONMENT_TYPE' ) && WP_ENVIRONMENT_TYPE === 'local';
+		$ip_verified = $is_local || ( is_array( $cv_bot_ip ) && in_array( $visitor_ip, $cv_bot_ip ) );
+		$test_type = self::test_type();
+		$result = $test_type && $ip_verified;
 
-		if ( isset( $_REQUEST['checkview_test_id'] ) && ! $ip_verified ) {
-			Checkview_Admin_Logs::add( 'ip-logs', 'Although checkview_test_id is set in the request, failing bot check due to visitor IP [' . $visitor_ip . '] not existing in bot IP list [' . implode(', ', $cv_bot_ip) . '].' );
+		// Only log during actual tests
+		if ( isset( $_REQUEST['checkview_test_id'] ) ) {
+			// Sanitize for logging: remove control chars, limit length
+			$sanitize = function ( $val, $max_len = 200 ) {
+				$str = preg_replace( '/[\x00-\x1F\x7F]/', '', strval( $val ) );
+				if ( null === $str ) {
+					$str = '[sanitize error]';
+				}
 
-			return false;
+				return ( strlen( $str ) > $max_len ) ? substr( $str, 0, $max_len ) . '...' : $str;
+			};
+
+			$test_id         = substr( sanitize_text_field( wp_unslash( $_REQUEST['checkview_test_id'] ) ), 0, 36 );
+			$safe_visitor_ip = $sanitize( $visitor_ip, 45 );
+
+			// Collect IP headers
+			$headers = array();
+			$cf      = $sanitize( isset( $_SERVER['HTTP_CF_CONNECTING_IP'] ) ? $_SERVER['HTTP_CF_CONNECTING_IP'] : '', 45 );
+			$xff     = $sanitize( isset( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ? $_SERVER['HTTP_X_FORWARDED_FOR'] : '', 100 );
+			$xri     = $sanitize( isset( $_SERVER['HTTP_X_REAL_IP'] ) ? $_SERVER['HTTP_X_REAL_IP'] : '', 45 );
+			$cli     = $sanitize( isset( $_SERVER['HTTP_CLIENT_IP'] ) ? $_SERVER['HTTP_CLIENT_IP'] : '', 45 );
+			$ra      = $sanitize( isset( $_SERVER['REMOTE_ADDR'] ) ? $_SERVER['REMOTE_ADDR'] : '', 45 );
+
+			if ( $cf ) {
+				$headers[] = 'CF=[' . $cf . ']';
+			}
+			if ( $xff ) {
+				$headers[] = 'XFF=[' . $xff . ']';
+			}
+			if ( $xri ) {
+				$headers[] = 'XRI=[' . $xri . ']';
+			}
+			if ( $cli ) {
+				$headers[] = 'CLI=[' . $cli . ']';
+			}
+			$headers[] = 'RA=[' . ( $ra ?: 'not set' ) . ']';
+
+			Checkview_Admin_Logs::add( 'ip-logs', sprintf(
+				'Bot check %s [%s]: detected=[%s], %s, ip_ok=[%s], whitelist=[%d IPs]%s',
+				$result ? 'PASSED' : 'FAILED',
+				$test_id,
+				$safe_visitor_ip ?: 'empty',
+				implode( ', ', $headers ),
+				$ip_verified ? 'yes' : 'no',
+				is_array( $cv_bot_ip ) ? count( $cv_bot_ip ) : 0,
+				$is_local ? ', LOCAL_ENV' : ''
+			) );
 		}
 
-		$has_cookie = self::has_cookie();
-
-		return $has_cookie && $ip_verified;
+		return $test_type && $ip_verified;
 	}
 
 	/**
@@ -314,6 +372,8 @@ class CheckView {
 		}
 
 		if ( self::is_bot() ) {
+			do_action( 'checkview_before_init_current_test' );
+
 			$this->loader->add_action(
 				'init',
 				$plugin_admin,

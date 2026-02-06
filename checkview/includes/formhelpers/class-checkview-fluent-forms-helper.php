@@ -35,6 +35,13 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 		public $loader;
 
 		/**
+		 * Checkable inputs counter.
+		 *
+		 * @var int $counter Number of checkable inputs iterated over during rendering.
+		 */
+		private static $counter = 0;
+
+		/**
 		 * Constructor.
 		 *
 		 * Initiates loader property, adds hooks.
@@ -148,6 +155,30 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 				'__return_true',
 				999
 			);
+
+			add_filter(
+				'fluentform/rendering_field_html_input_checkbox',
+				array($this, 'static_ids'),
+				99
+			);
+
+			add_filter(
+				'fluentform/rendering_field_html_terms_and_condition',
+				array($this, 'static_ids'),
+				99
+			);
+
+			add_filter(
+				'fluentform/rendering_field_html_gdpr_agreement',
+				array($this, 'static_ids'),
+				99
+			);
+
+			add_filter(
+				'fluentform/rendering_field_html_input_radio',
+				array($this, 'static_ids'),
+				99
+			);
 		}
 
 		/**
@@ -165,6 +196,8 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 			} else {
 				$address .= ', ' . TEST_EMAIL;
 			}
+
+			Checkview_Admin_Logs::add( 'ip-logs', 'Submission recipient email address: ' . wp_json_encode( $address ) );
 			return $address;
 		}
 
@@ -178,6 +211,7 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 		 * @return string Email.
 		 */
 		public function checkview_remove_receipt( $address, $notification, $submitted_data, $form ) {
+			Checkview_Admin_Logs::add( 'ip-logs', 'Submission recipient email address: ' . wp_json_encode( TEST_EMAIL ) );
 			return TEST_EMAIL;
 		}
 
@@ -200,7 +234,10 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 					return stripos( $header, 'bcc:' ) !== 0 && stripos( $header, 'cc:' ) !== 0;
 				}
 			);
-			return array_values( $filtered_headers );
+
+			$array_values = array_values( $filtered_headers );
+			Checkview_Admin_Logs::add( 'ip-logs', 'Submission email headers: ' . wp_json_encode( $array_values ) );
+			return $array_values;
 		}
 		/**
 		 * Stores the test results and finishes the testing session.
@@ -312,6 +349,36 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 				$notifications['notifications'] = 'email_notifications';
 			}
 			return $notifications;
+		}
+
+		/**
+		 * Replace IDs for checkbox/radio inputs & labels with static IDs based on incremental counter.
+		 *
+		 * @param $html Input's HTML.
+		 *
+		 * @return string Modified HTML.
+		 */
+		public static function static_ids($html) {
+			$map = [];
+
+			// Build map of old IDs to new IDs
+			preg_match_all('/\bid=[\'"]([^\'"]+)[\'"]/', $html, $matches);
+			foreach ($matches[1] as $oldId) {
+				if (!isset($map[$oldId])) {
+					$map[$oldId] = 'ff_checkable_' . (++self::$counter);
+				}
+			}
+
+			// Replace both id= and for= attributes
+			foreach ($map as $oldId => $newId) {
+				$html = str_replace(
+					['id="' . $oldId . '"', "id='" . $oldId . "'", 'for="' . $oldId . '"', "for='" . $oldId . "'"],
+					['id="' . $newId . '"', "id='" . $newId . "'", 'for="' . $newId . '"', "for='" . $newId . "'"],
+					$html
+				);
+			}
+
+			return $html;
 		}
 	}
 
