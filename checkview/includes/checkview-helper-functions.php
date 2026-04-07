@@ -140,7 +140,8 @@ if ( ! function_exists( 'checkview_disable_addons_providers' ) ) {
 	 * @return array
 	 */
 	function checkview_disable_addons_providers( array $providers ): array {
-		if ( false == get_option( 'disable_actions', false ) ) {
+		$cv_test_id = get_checkview_test_id();
+		if ( ! $cv_test_id || 'true' != get_option( 'disable_actions_' . $cv_test_id, false ) ) {
 			return $providers;
 		}
 		$providers = array();
@@ -163,7 +164,8 @@ if ( ! function_exists( 'checkview_disable_addons_feed' ) ) {
 	 * @return array
 	 */
 	function checkview_disable_addons_feed( array $core_class_names ): array {
-		if ( false == get_option( 'disable_actions', false ) ) {
+		$cv_test_id = get_checkview_test_id();
+		if ( ! $cv_test_id || 'true' != get_option( 'disable_actions_' . $cv_test_id, false ) ) {
 			return $core_class_names;
 		}
 		$core_class_names = array(
@@ -240,5 +242,19 @@ if ( is_plugin_active( 'defender-security/wp-defender.php' ) ) {
 			return $whitelisted_ips;
 		},
 		10
+	);
+}
+// Bypass WP Force Login.
+if ( is_plugin_active( 'wp-force-login/wp-force-login.php' ) ) {
+	add_filter(
+		'v_forcelogin_bypass',
+		function ( $bypass, $visited_url ) {
+			if ( CheckView::is_bot() ) {
+				return true;
+			}
+			return $bypass;
+		},
+		10,
+		2
 	);
 }
