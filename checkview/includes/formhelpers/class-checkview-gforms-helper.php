@@ -155,6 +155,16 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 				'__return_null',
 				-10
 			);
+
+			// Bypass CAPTCHA/anti-bot validation failures. The GF reCAPTCHA
+			// Add-On v2.x validates via gform_validation, not via a captcha-type
+			// field, so maybe_hide_recaptcha() cannot catch it. This runs at
+			// PHP_INT_MAX (guaranteed last) and clears any remaining failures.
+			add_filter(
+				'gform_validation',
+				array( $this, 'checkview_bypass_captcha_validation' ),
+				PHP_INT_MAX
+			);
 		}
 		/**
 		 * Unsets Captchas from the form.
@@ -179,12 +189,51 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 		}
 
 		/**
-		 * Stores the test results and finishes the testing session.
+		 * Bypasses CAPTCHA/anti-bot validation failures during CheckView tests.
 		 *
-		 * Deletes test submission from Formidable database table.
+		 * The GF reCAPTCHA Add-On v2.x validates via gform_validation, not via
+		 * a captcha-type field. maybe_hide_recaptcha() only removes fields, so
+		 * it cannot catch this. This filter runs at PHP_INT_MAX priority
+		 * (guaranteed last, after all other validation hooks) and clears failures.
+		 *
+		 * Only loaded when is_bot() is true (constructor gated by
+		 * checkview_init_current_test which requires is_bot()).
+		 *
+		 * @param array $validation_result GF validation result.
+		 * @return array
+		 */
+		public function checkview_bypass_captcha_validation( $validation_result ) {
+			if ( ! $validation_result['is_valid'] ) {
+				Checkview_Admin_Logs::add( 'ip-logs',
+					'Form validation failed during CheckView test. Clearing validation failures.' );
+
+				$fields = $validation_result['form']['fields'] ?? array();
+				foreach ( $fields as &$field ) {
+					if ( $field->failed_validation ) {
+						Checkview_Admin_Logs::add( 'ip-logs',
+							'Cleared validation failure for field [' . $field->id . '] type [' . $field->type . '].' );
+						$field->failed_validation  = false;
+						$field->validation_message = '';
+					}
+				}
+
+				$validation_result['is_valid'] = true;
+			}
+
+			return $validation_result;
+		}
+
+		/**
+		 * Clones the GF submission to cv_entry tables, schedules deferred deletion
+		 * of the source GF entry, and finishes the testing session.
+		 *
+		 * Deletion is deferred ~15 min to allow GF async feed processing
+		 * (Mailchimp, Webhooks, etc.) to load the entry and fire third-party
+		 * integrations. See checkview_gf_should_defer_delete() for the
+		 * emergency-rollback escape hatch.
 		 *
 		 * @param array  $entry Form entry data.
-		 * @param object $form Form object.
+		 * @param object $form  Form object.
 		 * @return void
 		 */
 		public function checkview_clone_entry( $entry, $form ) {
@@ -198,7 +247,21 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 			self::checkview_clone_gf_entry( $entry['id'], $form_id, $checkview_test_id );
 
 			if ( isset( $entry['id'] ) ) {
-				GFAPI::delete_entry( $entry['id'] );
+				$entry_id = (int) $entry['id'];
+				if ( checkview_gf_should_defer_delete() ) {
+					// Defer entry deletion so GF async feed processing
+					// (GF_Background_Process) has time to load the entry and fire
+					// third-party integrations. Without this delay,
+					// GF_Feed_Processor::task() aborts with "entry not found".
+					wp_schedule_single_event(
+						time() + 15 * MINUTE_IN_SECONDS,
+						'checkview_gf_deferred_entry_delete',
+						array( $entry_id )
+					);
+				} else {
+					// Emergency-rollback escape hatch — legacy synchronous deletion.
+					GFAPI::delete_entry( $entry_id );
+				}
 			}
 
 			complete_checkview_test( $checkview_test_id );

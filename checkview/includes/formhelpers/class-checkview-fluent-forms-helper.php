@@ -149,7 +149,7 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 			add_filter(
 				'fluentform/global_notification_active_types',
 				array( $this, 'checkview_disable_form_actions' ),
-				99,
+				PHP_INT_MAX,
 				2,
 			);
 
@@ -256,13 +256,19 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 			return $array_values;
 		}
 		/**
-		 * Stores the test results and finishes the testing session.
+		 * Clones the Fluent Forms submission to cv_entry tables, schedules
+		 * deferred deletion of the source FF rows, and finishes the testing
+		 * session.
 		 *
-		 * Deletes test submission from Formidable database table.
+		 * Deletion is deferred ~15 min so Fluent Forms Pro async feed processing
+		 * (Mailchimp, Webhooks, Slack, Zapier, HubSpot, Pipedrive, etc.) has time
+		 * to load the submission and fire third-party integrations. See
+		 * checkview_ff_should_defer_delete() for the emergency-rollback escape
+		 * hatch (CHECKVIEW_FF_DEFER_ENTRY_DELETE = false).
 		 *
-		 * @param int    $entry_id Fluent Form ID.
-		 * @param array  $form_data Fluent Form data.
-		 * @param object $form Fluent Form object.
+		 * @param int    $entry_id  Fluent Forms submission ID.
+		 * @param array  $form_data Submitted form data.
+		 * @param object $form      Fluent Forms form object.
 		 * @return void
 		 */
 		public function checkview_clone_fluentform_entry( $entry_id, $form_data, $form ) {
@@ -347,15 +353,33 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 				Checkview_Admin_Logs::add( 'ip-logs', 'Cloned submission entry data (inserted ' . (int) $result . ' rows into ' . $entry_table . ').' );
 			}
 
-			// remove entry from Fluent forms tables.
-			$delete = wpFluent()->table( 'fluentform_submissions' )
-			->where( 'form_id', $form_id )
-			->where( 'id', '=', $entry_id )
-			->delete();
-			$delete = wpFluent()->table( 'fluentform_entry_details' )
-			->where( 'form_id', $form_id )
-			->where( 'submission_id', '=', $entry_id )
-			->delete();
+			// Remove entry from Fluent Forms tables.
+			//
+			// Deletion is deferred ~15 min to allow Fluent Forms Pro async feed
+			// processing (Mailchimp, Webhooks, Slack, Zapier, HubSpot, Pipedrive,
+			// etc.) to load the submission row and fire third-party integrations.
+			// Without this delay, queued feed handlers re-fetch the submission
+			// seconds later in a separate request and silently abort when the row
+			// is gone — exactly the GF async-feed bug, ported to FF Pro queues.
+			// See checkview_ff_should_defer_delete() for the emergency-rollback
+			// escape hatch (CHECKVIEW_FF_DEFER_ENTRY_DELETE = false).
+			if ( checkview_ff_should_defer_delete() ) {
+				wp_schedule_single_event(
+					time() + 15 * MINUTE_IN_SECONDS,
+					'checkview_ff_deferred_entry_delete',
+					array( (int) $entry_id, (int) $form_id )
+				);
+			} else {
+				// Emergency-rollback escape hatch — legacy synchronous deletion.
+				wpFluent()->table( 'fluentform_submissions' )
+					->where( 'form_id', $form_id )
+					->where( 'id', '=', $entry_id )
+					->delete();
+				wpFluent()->table( 'fluentform_entry_details' )
+					->where( 'form_id', $form_id )
+					->where( 'submission_id', '=', $entry_id )
+					->delete();
+			}
 
 			complete_checkview_test( $checkview_test_id );
 		}
@@ -369,10 +393,28 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 		 */
 		public function checkview_disable_form_actions( $notifications, $form_id ) {
 			$cv_test_id = get_checkview_test_id();
-			if ( $cv_test_id && 'true' == get_option( 'disable_actions_' . $cv_test_id, false ) ) {
-				return array();
+			if ( ! $cv_test_id || 'true' !== get_option( 'disable_actions_' . $cv_test_id, false ) ) {
+				return $notifications;
 			}
-			return $notifications;
+			if ( ! is_array( $notifications ) || empty( $notifications ) ) {
+				return $notifications;
+			}
+			// Preserve native Fluent Forms feeds only; drop third-party integrations
+			// (slack, mailchimp_feeds, webhook, zapier, hubspot, pipedrive, etc.) during
+			// CheckView automated tests so assert_email_received still receives the
+			// confirmation mail to <test_run_id>@test-mail.checkview.io.
+			//
+			// Native key list verified against Fluent Forms 6.2.2 upstream source —
+			// EmailNotificationActions.php registers $types['notifications'] (the email
+			// feed). If a future Fluent version RENAMES this key, assert_email_received
+			// will time out on the next run, prompting an update here. If Fluent ADDS a
+			// new native non-email key (e.g. a hypothetical 'auto_responder' feed), it
+			// will be silently filtered out — acceptable in the test context since the
+			// email feed still fires. Visible failure on rename is preferred over a
+			// silent fallback to "all feeds fire" which would let real integrations run
+			// during automated tests.
+			$native_keys = array( 'notifications' );
+			return array_intersect_key( $notifications, array_flip( $native_keys ) );
 		}
 
 		/**
