@@ -205,7 +205,7 @@ if ( ! function_exists( 'get_checkview_test_id' ) ) {
 	 * @return string|false Test ID, or `false` on failure.
 	 */
 	function get_checkview_test_id() {
-		$cv_test_id = isset( $_REQUEST['checkview_test_id'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['checkview_test_id'] ) ) : '';
+		$cv_test_id = isset( $_REQUEST[ CheckView::PARAM_TEST_ID ] ) ? sanitize_text_field( wp_unslash( $_REQUEST[ CheckView::PARAM_TEST_ID ] ) ) : '';
 
 		if ( ! empty( $cv_test_id ) ) {
 			if ( ! checkview_is_valid_uuid( $cv_test_id ) ) {
@@ -215,21 +215,16 @@ if ( ! function_exists( 'get_checkview_test_id' ) ) {
 		}
 
 		// Fallback: check referer URL for test ID (covers AJAX submissions).
-		$referer_url = isset( $_SERVER['HTTP_REFERER'] ) ? sanitize_url( sanitize_text_field( wp_unslash( $_SERVER['HTTP_REFERER'] ) ) ) : '';
-		$referer_url = wp_parse_url( $referer_url, PHP_URL_QUERY );
-		$qry_str     = array();
-		if ( $referer_url ) {
-			parse_str( $referer_url, $qry_str );
-		}
-		if ( ! empty( $qry_str['checkview_test_id'] ) && checkview_is_valid_uuid( $qry_str['checkview_test_id'] ) ) {
-			return $qry_str['checkview_test_id'];
+		$ref_test_id = CheckView::get_referrer_test_id();
+		if ( ! empty( $ref_test_id ) ) {
+			return $ref_test_id;
 		}
 
 		// Fallback: check cookie for test ID (covers multi-step forms where
 		// page transitions lose the query parameter from the URL).
 		// This cookie is set server-side by WordPress in checkview_init_current_test.
-		if ( isset( $_COOKIE['checkview_test_id'] ) ) {
-			$cookie_test_id = sanitize_text_field( wp_unslash( $_COOKIE['checkview_test_id'] ) );
+		if ( isset( $_COOKIE[ CheckView::PARAM_TEST_ID ] ) ) {
+			$cookie_test_id = sanitize_text_field( wp_unslash( $_COOKIE[ CheckView::PARAM_TEST_ID ] ) );
 			if ( ! empty( $cookie_test_id ) && checkview_is_valid_uuid( $cookie_test_id ) ) {
 				return $cookie_test_id;
 			}
@@ -326,8 +321,9 @@ if ( ! function_exists( 'complete_checkview_test' ) ) {
 		// flushed, so the guard lets cookie cleanup work for them while
 		// avoiding silent failures at shutdown.
 		if ( ! headers_sent() ) {
-			setcookie( 'checkview_test_id', '', time() - 6600, COOKIEPATH, COOKIE_DOMAIN );
-			setcookie( 'checkview_test_id' . $checkview_test_id, '', time() - 6600, COOKIEPATH, COOKIE_DOMAIN );
+			setcookie( CheckView::PARAM_TEST_ID, '', time() - 6600, COOKIEPATH, COOKIE_DOMAIN );
+			setcookie( CheckView::PARAM_TEST_ID . $checkview_test_id, '', time() - 6600, COOKIEPATH, COOKIE_DOMAIN );
+			setcookie( CheckView::PARAM_TEST_TYPE, '', time() - 6600, COOKIEPATH, COOKIE_DOMAIN );
 		}
 
 		cv_delete_option( 'disable_actions_' . $checkview_test_id );
@@ -366,13 +362,10 @@ if ( ! function_exists( 'cv_is_suppressible_test_order' ) ) {
 	 *
 	 * Reusable by:
 	 *   - the WooCommerce webhook filter (`checkview_filter_webhooks`)
+	 *   - the Mailchimp per-order gate
+	 *     (`checkview_mailchimp_should_push_order`, hooked to MC for WC's
+	 *     `mailchimp_should_push_order` filter in `mailchimp_handle_or_queue()`)
 	 *   - any future addon gate that needs the same invariant
-	 *
-	 * NOT used by the Mailchimp kill-switch — Mailchimp doesn't expose a
-	 * per-order suppression filter, so `checkview_mailchimp_killswitch`
-	 * reads the same `disable_*_<id>` options directly and short-circuits
-	 * `mailchimp_is_configured()` instead. Either gate fires under the
-	 * same condition this function checks below.
 	 *
 	 * Includes a kill-switch short-circuit at the top: if the
 	 * `cv_suppression_kill_switch` option is set to `'true'` (via WP-CLI for
@@ -406,7 +399,7 @@ if ( ! function_exists( 'cv_is_suppressible_test_order' ) ) {
 		}
 
 		// Invariant 1: order has a valid checkview_test_id UUID meta.
-		$test_id = $order->get_meta( 'checkview_test_id' );
+		$test_id = $order->get_meta( CheckView::PARAM_TEST_ID );
 		if ( ! $test_id || ! checkview_is_valid_uuid( $test_id ) ) {
 			return false;
 		}
@@ -1069,6 +1062,50 @@ if ( ! function_exists( 'checkview_get_wp_block_pages' ) ) {
 		);
 	}
 }
+
+if ( ! function_exists( 'checkview_get_elementor_form_widgets' ) ) {
+	/**
+	 * Recursively collects Elementor Pro form widgets from an Elementor data tree.
+	 *
+	 * Elementor stores page content as a nested element tree in the
+	 * `_elementor_data` post meta. Form widgets are nodes with
+	 * `widgetType === 'form'`; a form's identifier is the element `id` (the same
+	 * value Elementor renders as the hidden `form_id` input and that
+	 * `Form_Record::get_form_settings( 'id' )` returns during submission).
+	 *
+	 * @since 1.0.0
+	 *
+	 * @param array $elements Decoded Elementor element tree (or a subtree).
+	 * @return array List of form-widget element arrays.
+	 */
+	function checkview_get_elementor_form_widgets( $elements ) {
+		$found = array();
+
+		if ( ! is_array( $elements ) ) {
+			return $found;
+		}
+
+		foreach ( $elements as $element ) {
+			if ( ! is_array( $element ) ) {
+				continue;
+			}
+
+			if ( isset( $element['widgetType'] ) && 'form' === $element['widgetType'] ) {
+				$found[] = $element;
+			}
+
+			if ( ! empty( $element['elements'] ) && is_array( $element['elements'] ) ) {
+				$found = array_merge(
+					$found,
+					checkview_get_elementor_form_widgets( $element['elements'] )
+				);
+			}
+		}
+
+		return $found;
+	}
+}
+
 if ( ! function_exists( 'checkview_reset_cache' ) ) {
 	/**
 	 * Deletes CheckView transients.
@@ -1484,110 +1521,6 @@ if ( ! function_exists( 'checkview_nf_run_deferred_entry_delete' ) ) {
 	add_action( 'checkview_nf_deferred_entry_delete', 'checkview_nf_run_deferred_entry_delete' );
 }
 
-add_action(
-	'wp_ajax_checkview_get_status',
-	'checkview_get_option_data_handler'
-);
-add_action(
-	'wp_ajax_nopriv_checkview_get_status',
-	'checkview_get_option_data_handler'
-);
-if ( ! function_exists( 'checkview_get_option_data_handler' ) ) {
-	/**
-	 * WP AJAX callback that determines if the plugin is loaded.
-	 *
-	 * Handles WP AJAX requests that query whether the helper plugin is loaded or
-	 * not. The plugin is determined to be loaded if the request is coming from
-	 * the SaaS and the request includes a valid nonce.
-	 *
-	 * @return void
-	 */
-	function checkview_get_option_data_handler() {
-		if ( empty( $_POST['_checkview_token'] ) ) {
-			Checkview_Admin_Logs::add( 'api-logs', 'Token absent.' );
-			wp_send_json_error( esc_html__( 'There was a technical error while processing your request.', 'checkview' ) );
-			wp_die();
-		}
-		// Current Vsitor IP.
-		$visitor_ip = checkview_get_visitor_ip();
-		$api_ip     = checkview_get_api_ip();
-		if ( ! is_array( $api_ip ) || ! in_array( $visitor_ip, $api_ip ) ) {
-			Checkview_Admin_Logs::add( 'api-logs', 'Not SaaS.' );
-			wp_send_json_error( esc_html__( 'There was a technical error while processing your request.', 'checkview' ) );
-			wp_die();
-		}
-
-		$token       = sanitize_text_field( wp_unslash( $_POST['_checkview_token'] ) );
-		$nonce_token = checkview_validate_jwt_token( $token );
-
-		// Checking for JWT token.
-		if ( empty( $nonce_token ) || is_wp_error( $nonce_token ) ) {
-			Checkview_Admin_Logs::add( 'api-logs', 'Invalid token.' );
-			wp_send_json_error( esc_html__( 'There was a technical error while processing your request.', 'checkview' ) );
-			wp_die();
-		}
-
-		// Handle invalid nonce UUIDs.
-		if ( ! checkview_is_valid_uuid( $nonce_token ) ) {
-			// Log the detailed error for internal use.
-			Checkview_Admin_Logs::add( 'api-logs', 'Invalid nonce format.' );
-			wp_send_json_error( esc_html__( 'There was a technical error while processing your request.', 'checkview' ) );
-			wp_die();
-		}
-		global $wpdb;
-		$cv_used_nonces = $wpdb->prefix . 'cv_used_nonces';
-		// Query to check if the table exists.
-		$table_exists = $wpdb->get_var(
-			$wpdb->prepare(
-				'SHOW TABLES LIKE %s',
-				$cv_used_nonces
-			)
-		);
-		if ( $table_exists !== $cv_used_nonces ) {
-			// Log the detailed error for internal use.
-			Checkview_Admin_Logs::add( 'api-logs', 'Nonce table absent.' );
-			wp_send_json_error( esc_html__( 'There was a technical error while processing your request.', 'checkview' ) );
-			wp_die();
-		}
-		// Check if the nonce exists.
-		$nonce_exists = $wpdb->get_var(
-			$wpdb->prepare(
-				"SELECT COUNT(*) FROM $cv_used_nonces WHERE nonce = %s",
-				$nonce_token
-			)
-		);
-
-		// Nonce already used, return an error response.
-		if ( $nonce_exists ) {
-			// Log the detailed error for internal use.
-			Checkview_Admin_Logs::add( 'api-logs', 'This nonce has already been used.' );
-			wp_send_json_error( esc_html__( 'There was a technical error while processing your request.', 'checkview' ) );
-			wp_die();
-		} else {
-			// Store the nonce in the database. wpdb::insert() returns false on
-			// failure (not WP_Error), so is_wp_error() would never catch it.
-			$response = $wpdb->insert( $cv_used_nonces, array( 'nonce' => $nonce_token ) );
-			if ( false === $response ) {
-				Checkview_Admin_Logs::add( 'api-logs', 'Not able to add nonce. wpdb->last_error=[' . $wpdb->last_error . ']' );
-				wp_send_json_error( esc_html__( 'There was a technical error while processing your request.', 'checkview' ) );
-			}
-		}
-
-		if ( 'checkview-saas' === get_option( $visitor_ip ) ) {
-			// Send the option value as a JSON response.
-			wp_send_json_success(
-				array(
-					'helper_loaded' => true,
-				)
-			);
-
-			wp_die(); // Required to terminate properly in WordPress AJAX.
-		} else {
-			wp_send_json_error( esc_html__( 'Helper not loaded.', 'checkview' ) );
-			wp_die();
-		}
-	}
-}
 if ( ! function_exists( 'checkview_update_woocommerce_product_status' ) ) {
 	/**
 	 * Update status of test product.

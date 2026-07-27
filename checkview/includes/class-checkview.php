@@ -60,14 +60,23 @@ class CheckView {
 	private static $instance = null;
 
 	/**
-	 * Bot cookie name.
-	 *
-	 * @since 2.0.20
-	 * @access private
-	 *
-	 * @var string $bot_cookie Bot cookie name.
+	 * Query parameter / cookie / meta key for the test ID.
 	 */
-	private static string $bot_cookie = 'cv_running';
+	const PARAM_TEST_ID = 'checkview_test_id';
+
+	/**
+	 * Query parameter / cookie name for the test type.
+	 */
+	const PARAM_TEST_TYPE = 'checkview_test_type';
+
+	/**
+	 * Determine if the `CHECKVIEW_DEV` constant is truthy.
+	 *
+	 * @return bool
+	 */
+	public static function is_checkview_dev(): bool {
+		return defined('CHECKVIEW_DEV') && CHECKVIEW_DEV;
+	}
 
 	/**
 	 * Constructor.
@@ -80,7 +89,7 @@ class CheckView {
 		if ( defined( 'CHECKVIEW_VERSION' ) ) {
 			$this->version = CHECKVIEW_VERSION;
 		} else {
-			$this->version = '2.2.1';
+			$this->version = '2.3.0';
 		}
 		$this->plugin_name = 'checkview';
 
@@ -110,56 +119,92 @@ class CheckView {
 	}
 
 	/**
+	 * Extract a query parameter from a given URL.
+	 *
+	 * @param $url string URL.
+	 * @param $param string Parameter's key.
+	 *
+	 * @return string|null Parameter's value,
+	 */
+	public static function get_param( string $url, string $param): ?string {
+		$params = array();
+		parse_str( $url, $params );
+		return sanitize_text_field( $params[ $param ] ?? '' );
+	}
+
+	/**
+	 * Gets a query parameter from the current referrer.
+	 *
+	 * @param $param string Parameter's key.
+	 *
+	 * @return string|null Parameter's value, or null if not found.
+	 */
+	public static function get_referrer_param( string $param ): ?string {
+		$referer = wp_get_raw_referer();
+		if ( $referer ) {
+			$query = wp_parse_url( $referer, PHP_URL_QUERY );
+			if ( $query ) {
+				return self::get_param( $query, $param );
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Gets the CheckView test ID from the current referrer URL.
+	 *
+	 * @return string|null Valid UUID test ID, or null.
+	 */
+	public static function get_referrer_test_id(): ?string {
+		$test_id = self::get_referrer_param( self::PARAM_TEST_ID );
+		return ( is_string( $test_id ) && checkview_is_valid_uuid( $test_id ) ) ? $test_id : null;
+	}
+
+	/**
+	 * Gets the CheckView test type from the current referrer URL.
+	 *
+	 * @return string|null Test type (e.g. "form", "full_checkout"), or null.
+	 */
+	public static function get_referrer_test_type(): ?string {
+		return self::get_referrer_param( self::PARAM_TEST_TYPE ) ?? null;
+	}
+
+	/**
 	 * Determine if the request contains the query parameters necessary for detecting test type.
-	 * 
-	 * Legacy: Falls back to the value of `self::$bot_cookie` if it is valid.
 	 *
 	 * Returns one of:
 	 * - "form" - Supported form plugin tests.
 	 * - "custom" - Custom tests.
 	 * - "full_checkout" - WooCommerce full checkout tests.
 	 * - "add_to_cart" - WooCommerce add-to-cart test.
-	 * - "woo_checkout" - WooCommerce full checkout tests (deprecated; from legacy cookie).
 	 * - false - If not set or invalid value.
 	 *
-	 * @return string|false Validated cookie value, or false.
+	 * @return string|false Validated param value, or false.
 	 */
 	public static function test_type() {
-		$test_id = sanitize_text_field( wp_unslash( $_REQUEST['checkview_test_id'] ?? '' ) );
-		$test_type = sanitize_text_field( wp_unslash( $_REQUEST['checkview_test_type'] ?? '' ) );
-		if ( ! empty( $test_id ) && checkview_is_valid_uuid( $test_id ) && ! empty( $test_type ) ) {
+		$test_type = sanitize_text_field( wp_unslash( $_REQUEST[ self::PARAM_TEST_TYPE ] ?? '' ) );
+		if ( ! empty( $test_type ) ) {
 			return $test_type;
 		}
 
-		// AJAX requests: check the HTTP referer URL for test parameters.
-		if ( wp_doing_ajax() ) {
-			$referer = wp_get_raw_referer();
-			if ( $referer ) {
-				$query = wp_parse_url( $referer, PHP_URL_QUERY );
-				if ( $query ) {
-					$params = array();
-					parse_str( $query, $params );
-					$ref_test_id   = sanitize_text_field( $params['checkview_test_id'] ?? '' );
-					$ref_test_type = sanitize_text_field( $params['checkview_test_type'] ?? '' );
-					if ( ! empty( $ref_test_id ) && checkview_is_valid_uuid( $ref_test_id ) && ! empty( $ref_test_type ) ) {
-						return $ref_test_type;
-					}
-				}
-			}
+		// Fallback: check the HTTP referer URL for test parameters.
+		// Covers AJAX (admin-ajax.php) and REST API submissions (e.g. WS Form)
+		// where the form page URL carries the test params but the POST body doesn't.
+		$ref_test_type = self::get_referrer_test_type();
+		if ( ! empty( $ref_test_type ) ) {
+			return $ref_test_type;
 		}
 
-		// Fallback: valid test ID from request, referer, or cookie but no type param.
-		// Covers multi-step forms where page transitions lose query params.
+		// Fallback: plugin-set cookie persists test type across deep navigations
+		// (e.g. WooCommerce redirects, multi-step forms) where URL params and
+		// referer are both lost.
 		$cv_test_id = get_checkview_test_id();
-		if ( ! empty( $cv_test_id ) ) {
-			$valid_values = array( 'woo_checkout', 'full_checkout', 'add_to_cart', 'form', 'custom' );
-			if ( isset( $_COOKIE[ self::$bot_cookie ] ) ) {
-				$cookie_value = sanitize_text_field( wp_unslash( $_COOKIE[ self::$bot_cookie ] ) );
-				if ( in_array( $cookie_value, $valid_values, true ) ) {
-					return $cookie_value;
-				}
+		if ( ! empty( $cv_test_id ) && isset( $_COOKIE[ self::PARAM_TEST_TYPE ] ) ) {
+			$cookie_type = sanitize_text_field( wp_unslash( $_COOKIE[ self::PARAM_TEST_TYPE ] ) );
+			if ( ! empty( $cookie_type ) ) {
+				return $cookie_type;
 			}
-			return 'form';
 		}
 
 		return false;
@@ -201,7 +246,7 @@ class CheckView {
 		$result = $test_type && $verified;
 
 		// Only log during actual tests
-		if ( isset( $_REQUEST['checkview_test_id'] ) ) {
+		if ( isset( $_REQUEST[ self::PARAM_TEST_ID ] ) ) {
 			// Sanitize for logging: remove control chars, limit length
 			$sanitize = function ( $val, $max_len = 200 ) {
 				$str = preg_replace( '/[\x00-\x1F\x7F]/', '', strval( $val ) );
@@ -212,7 +257,7 @@ class CheckView {
 				return ( strlen( $str ) > $max_len ) ? substr( $str, 0, $max_len ) . '...' : $str;
 			};
 
-			$test_id         = substr( sanitize_text_field( wp_unslash( $_REQUEST['checkview_test_id'] ) ), 0, 36 );
+			$test_id         = substr( sanitize_text_field( wp_unslash( $_REQUEST[ self::PARAM_TEST_ID ] ) ), 0, 36 );
 			$safe_visitor_ip = $sanitize( $visitor_ip, 45 );
 
 			// Collect IP headers
@@ -334,7 +379,7 @@ class CheckView {
 		$cv_bot_ip = checkview_get_api_ip();
 
 		// TODO: What is this for?
-		if ( ( 'checkview-saas' === get_option( $visitor_ip ) || isset( $_REQUEST['checkview_test_id'] ) || ( is_array( $cv_bot_ip ) && in_array( $visitor_ip, $cv_bot_ip ) ) ) ) {
+		if ( ( 'checkview-saas' === get_option( $visitor_ip ) || isset( $_REQUEST[ self::PARAM_TEST_ID ] ) || ( is_array( $cv_bot_ip ) && in_array( $visitor_ip, $cv_bot_ip ) ) ) ) {
 			update_option( $visitor_ip, 'checkview-saas', true );
 		}
 

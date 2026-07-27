@@ -245,64 +245,6 @@ class CheckView_Api {
 
 		register_rest_route(
 			'checkview/v1',
-			'/store/createtestcustomer',
-			array(
-				'methods'             => array( 'POST' ),
-				'callback'            => array( $this, 'checkview_create_test_customer' ),
-				'permission_callback' => array( $this, 'checkview_get_items_permissions_check' ),
-				'args'                => array(
-					'_checkview_token' => array(
-						'required' => false,
-					),
-				),
-			)
-		);
-
-		register_rest_route(
-			'checkview/v1',
-			'/store/gettestcustomer',
-			array(
-				'methods'             => array( 'GET' ),
-				'callback'            => array( $this, 'checkview_get_test_customer_credentials' ),
-				'permission_callback' => array( $this, 'checkview_get_items_permissions_check' ),
-				'args'                => array(
-					'_checkview_token' => array(
-						'required' => false,
-					),
-				),
-			)
-		);
-		register_rest_route(
-			'checkview/v1',
-			'/verifytestuser',
-			array(
-				'methods'             => array( 'GET' ),
-				'callback'            => array( $this, 'checkview_verify_test_user_credentials' ),
-				'permission_callback' => array( $this, 'checkview_get_items_permissions_check' ),
-				'args'                => array(
-					'user_email' => array(
-						'required' => true,
-					),
-				),
-			)
-		);
-
-		register_rest_route(
-			'checkview/v1',
-			'/deletetestuser',
-			array(
-				'methods'             => array( 'GET' ),
-				'callback'            => array( $this, 'checkview_delete_test_user_credentials' ),
-				'permission_callback' => array( $this, 'checkview_get_items_permissions_check' ),
-				'args'                => array(
-					'user_email' => array(
-						'required' => true,
-					),
-				),
-			)
-		);
-		register_rest_route(
-			'checkview/v1',
 			'/store/getstorelocations',
 			array(
 				'methods'             => array( 'GET' ),
@@ -1162,183 +1104,6 @@ class CheckView_Api {
 	}
 
 	/**
-	 * Creates the testing customer.
-	 *
-	 * @return WP_REST_Response|WP_Error
-	 */
-	public function checkview_create_test_customer() {
-		if ( ! class_exists( 'WooCommerce' ) ) {
-			Checkview_Admin_Logs::add( 'api-logs', 'WooCommerce not found.' );
-			return new WP_REST_Response(
-				array(
-					'status'        => 200,
-					'response'      => esc_html__( 'Dependency not found.', 'checkview' ),
-					'body_response' => false,
-				)
-			);
-		}
-		if ( isset( $this->jwt_error ) && null !== $this->jwt_error ) {
-			Checkview_Admin_Logs::add( 'api-logs', $this->jwt_error );
-			return new WP_Error(
-				400,
-				esc_html__( 'Invalid request.', 'checkview' ),
-			);
-		}
-		$customer = Checkview_Woo_Automated_Testing::checkview_create_test_customer();
-		if ( $customer ) {
-			return new WP_REST_Response(
-				array(
-					'status'   => 200,
-					'response' => esc_html__( 'Successfully created the customer.', 'checkview' ),
-					'body'     => 'Credentials will be provided on request.',
-				)
-			);
-		} else {
-			Checkview_Admin_Logs::add( 'api-logs', 'Failed to create the customer.' );
-			return new WP_Error(
-				400,
-				esc_html__( 'An error occurred while processing your request.', 'checkview' ),
-			);
-		}
-	}
-
-	/**
-	 * Retrieves credentials about the testing customer.
-	 *
-	 * @return WP_REST_Response|WP_Error
-	 */
-	public function checkview_get_test_customer_credentials() {
-		if ( ! class_exists( 'WooCommerce' ) ) {
-			Checkview_Admin_Logs::add( 'api-logs', 'WooCommerce not found.' );
-			return new WP_REST_Response(
-				array(
-					'status'        => 200,
-					'response'      => esc_html__( 'Dependency not found.', 'checkview' ),
-					'body_response' => false,
-				)
-			);
-		}
-		if ( isset( $this->jwt_error ) && null !== $this->jwt_error ) {
-			Checkview_Admin_Logs::add( 'api-logs', $this->jwt_error );
-			return new WP_Error(
-				400,
-				esc_html__( 'Invalid request.', 'checkview' ),
-			);
-		}
-		$customer = Checkview_Woo_Automated_Testing::checkview_get_test_credentials();
-		if ( $customer ) {
-			return new WP_REST_Response(
-				array(
-					'status'   => 200,
-					'response' => esc_html__( 'Successfully retrieved the customer.', 'checkview' ),
-					'body'     => $customer,
-				)
-			);
-		} else {
-			Checkview_Admin_Logs::add( 'api-logs', 'Failed to retrieve the customer.' );
-			return new WP_Error(
-				400,
-				esc_html__( 'An error occurred while processing your request.', 'checkview' ),
-			);
-		}
-	}
-
-	/**
-	 * Verifies that the CheckView test user exists.
-	 *
-	 * Checks for the existance of a user with the email from the request parameters.
-	 *
-	 * @param WP_REST_Request $request Request object.
-	 * @return WP_REST_Response|WP_Error
-	 */
-	public function checkview_verify_test_user_credentials( WP_REST_Request $request ) {
-		if ( isset( $this->jwt_error ) && null !== $this->jwt_error ) {
-			Checkview_Admin_Logs::add( 'api-logs', $this->jwt_error );
-			return new WP_Error(
-				400,
-				esc_html__( 'Invalid request.', 'checkview' ),
-			);
-		}
-		$user_email = $request->get_param( 'user_email' );
-		$user_email = isset( $user_email ) ? sanitize_email( $user_email ) : null;
-		if ( null === $user_email || empty( $user_email ) ) {
-			return new WP_Error(
-				400,
-				esc_html__( 'An error occurred while processing your request.', 'checkview' ),
-			);
-		}
-		$user = email_exists( $user_email );
-
-		if ( $user ) {
-			return new WP_REST_Response(
-				array(
-					'status'   => 200,
-					'response' => esc_html__( 'Successfully verified.', 'checkview' ),
-					'body'     => $user,
-				)
-			);
-		} else {
-			Checkview_Admin_Logs::add( 'api-logs', 'Failed to retrieve the user.' );
-			return new WP_Error(
-				400,
-				esc_html__( 'An error occurred while processing your request.', 'checkview' ),
-			);
-		}
-	}
-
-	/**
-	 * Deletes the CheckView testing user.
-	 *
-	 * @param WP_REST_Request $request Request object.
-	 * @return WP_REST_Response|WP_Error
-	 */
-	public function checkview_delete_test_user_credentials( WP_REST_Request $request ) {
-		if ( isset( $this->jwt_error ) && null !== $this->jwt_error ) {
-			Checkview_Admin_Logs::add( 'api-logs', $this->jwt_error );
-			return new WP_Error(
-				400,
-				esc_html__( 'Invalid request.', 'checkview' ),
-			);
-		}
-		$user_email = $request->get_param( 'user_email' );
-		$user_email = isset( $user_email ) ? sanitize_email( $user_email ) : null;
-		if ( null === $user_email || empty( $user_email ) ) {
-			return new WP_Error(
-				400,
-				esc_html__( 'An error occurred while processing your request.', 'checkview' ),
-			);
-		}
-		$user = email_exists( $user_email );
-
-		if ( $user ) {
-			// Delete the user if they exist. Optionally, you can set a reassign user ID if needed.
-			$deleted = wp_delete_user( $user );
-
-			if ( $deleted ) {
-				return new WP_REST_Response(
-					array(
-						'status'   => 200,
-						'response' => esc_html__( 'Successfully verified.', 'checkview' ),
-						'body'     => $deleted,
-					)
-				);
-			} else {
-				Checkview_Admin_Logs::add( 'api-logs', 'Failed to delete the user.' );
-				return new WP_Error(
-					400,
-					esc_html__( 'An error occurred while processing your request.', 'checkview' ),
-				);
-			}
-		} else {
-			Checkview_Admin_Logs::add( 'api-logs', 'Failed to retrieve the user.' );
-			return new WP_Error(
-				400,
-				esc_html__( 'An error occurred while processing your request.', 'checkview' ),
-			);
-		}
-	}
-
-	/**
 	 * Retrieves store selling locations.
 	 *
 	 * Retrieves a list of shipping and selling locations.
@@ -1955,6 +1720,63 @@ class CheckView_Api {
 			}
 		}
 
+		if ( is_plugin_active( 'elementor-pro/elementor-pro.php' ) ) {
+			/*
+			 * Elementor forms are not stored in a dedicated table or CPT; each
+			 * form is a widget embedded in a page's `_elementor_data` post meta
+			 * (JSON element tree). Find published posts whose Elementor data
+			 * contains a form widget, then walk the tree to collect each form.
+			 * The form id is the widget element id, which matches both the
+			 * rendered hidden `form_id` input and the submission hook's
+			 * get_form_settings( 'id' ) used by Checkview_Elementor_Helper.
+			 */
+			$elementor_pages = $wpdb->get_results(
+				$wpdb->prepare(
+					"SELECT p.ID, pm.meta_value FROM {$wpdb->prefix}posts p
+					INNER JOIN {$wpdb->prefix}postmeta pm ON pm.post_id = p.ID
+					WHERE pm.meta_key = %s
+					AND pm.meta_value LIKE %s
+					AND p.post_status = 'publish'
+					AND p.post_type NOT IN ('kadence_wootemplate', 'revision', 'elementor_library')",
+					'_elementor_data',
+					'%"widgetType":"form"%'
+				)
+			);
+			if ( $elementor_pages ) {
+				foreach ( $elementor_pages as $elementor_page ) {
+					$elementor_data = json_decode( $elementor_page->meta_value, true );
+					if ( ! is_array( $elementor_data ) ) {
+						continue;
+					}
+					$form_widgets = checkview_get_elementor_form_widgets( $elementor_data );
+					foreach ( $form_widgets as $form_widget ) {
+						if ( empty( $form_widget['id'] ) ) {
+							continue;
+						}
+						$form_id   = $form_widget['id'];
+						$form_name = ( ! empty( $form_widget['settings']['form_name'] ) )
+							? $form_widget['settings']['form_name']
+							: 'Form ' . $form_id;
+
+						if ( ! isset( $forms['Elementor'][ $form_id ] ) ) {
+							$forms['Elementor'][ $form_id ] = array(
+								'ID'   => $form_id,
+								'Name' => $form_name,
+							);
+						}
+
+						$page_url = checkview_must_ssl_url( get_the_permalink( $elementor_page->ID ) );
+						if ( ! empty( $page_url ) ) {
+							$forms['Elementor'][ $form_id ]['pages'][] = array(
+								'ID'  => $elementor_page->ID,
+								'url' => $page_url,
+							);
+						}
+					}
+				}
+			}
+		}
+
 		if ( is_array( $forms ) ) {
 			if ( ! empty( $forms ) ) {
 				set_transient( 'checkview_forms_list_transient', $forms, 12 * HOUR_IN_SECONDS );
@@ -2096,7 +1918,15 @@ class CheckView_Api {
 						'field_name'  => $row->meta_key,
 						'field_value' => $value,
 					);
-				} else {
+				} elseif ( 'Elementor' === $result->form_type ) {
+					$value = $row->meta_value;
+
+					$results[] = array(
+						'field_id' => '',
+						'field_name' => $row->meta_key,
+						'field_value' => $value,
+					);
+				} else  {
 					$results[] = array(
 						'field_id'    => $row->meta_key,
 						'field_value' => maybe_unserialize( $row->meta_value ),
@@ -2533,7 +2363,7 @@ class CheckView_Api {
 			);
 		}
 
-		if ( ! is_ssl() ) {
+		if ( ! CheckView::is_checkview_dev() && ! is_ssl() ) {
 			Checkview_Admin_Logs::add( 'api-logs', 'Insecure request blocked.' );
 			return new WP_Error(
 				'insecure_request',

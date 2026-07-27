@@ -439,28 +439,12 @@ class Checkview_Admin {
 		$disable_actions = isset( $_REQUEST['disable_actions'] )
 			? sanitize_text_field( wp_unslash( $_REQUEST['disable_actions'] ) )
 			: '';
-		$referrer_url = sanitize_url( wp_get_raw_referer(), array( 'http', 'https' ) );
-
 		// If not Ajax submission and found test_id.
 		if ( isset( $_SERVER['REQUEST_URI'] ) && strpos( sanitize_url( wp_unslash( $_SERVER['REQUEST_URI'] ) ), 'admin-ajax.php' ) === false && '' !== $cv_test_id ) {
 			// Create session for later use when form submit VIA AJAX.
 			checkview_create_cv_session( $visitor_ip, $cv_test_id );
 
 			cv_update_option( $visitor_ip, 'checkview-saas', true);
-		}
-
-		// If submit VIA AJAX.
-		if ( isset( $_SERVER['REQUEST_URI'] ) && strpos( sanitize_url( wp_unslash( $_SERVER['REQUEST_URI'] ) ), 'admin-ajax.php' ) !== false ) {
-			$referer_url_query = wp_parse_url( $referrer_url, PHP_URL_QUERY );
-			$qry_str = array();
-
-			if ( $referer_url_query ) {
-				parse_str( $referer_url_query, $qry_str );
-			}
-
-			if ( isset( $qry_str['checkview_test_id'] ) ) {
-				$cv_test_id = $qry_str['checkview_test_id'];
-			}
 		}
 
 		if ( ! empty( $cv_test_id ) && ! checkview_is_valid_uuid( $cv_test_id ) ) {
@@ -470,11 +454,13 @@ class Checkview_Admin {
 		}
 
 		if ( $cv_test_id && '' !== $cv_test_id ) {
-			setcookie( 'checkview_test_id', $cv_test_id, time() + 6600, COOKIEPATH, COOKIE_DOMAIN );
-		}
+			setcookie( CheckView::PARAM_TEST_ID, $cv_test_id, time() + 6600, COOKIEPATH, COOKIE_DOMAIN );
+			setcookie( CheckView::PARAM_TEST_ID . $cv_test_id, $cv_test_id, time() + 3600, COOKIEPATH, COOKIE_DOMAIN );
 
-		if ( $cv_test_id && '' !== $cv_test_id ) {
-			setcookie( 'checkview_test_id' . $cv_test_id, $cv_test_id, time() + 3600, COOKIEPATH, COOKIE_DOMAIN );
+			$cv_test_type = CheckView::test_type();
+			if ( $cv_test_type ) {
+				setcookie( CheckView::PARAM_TEST_TYPE, $cv_test_type, time() + 6600, COOKIEPATH, COOKIE_DOMAIN );
+			}
 		}
 
 		$cv_session = checkview_get_cv_session( $visitor_ip, $cv_test_id );
@@ -613,6 +599,16 @@ class Checkview_Admin {
 			Checkview_Admin_Logs::add( 'ip-logs', 'Loading Contact Form 7 helper.' );
 
 			require_once CHECKVIEW_INC_DIR . 'formhelpers/class-checkview-cf7-helper.php';
+		}
+
+		if ( is_plugin_active( 'elementor-pro/elementor-pro.php' ) ) {
+			if ( defined( 'ELEMENTOR_PRO_VERSION' ) && version_compare( ELEMENTOR_PRO_VERSION, '4.2.0', '>=' ) ) {
+				Checkview_Admin_Logs::add( 'ip-logs', 'Loading Elementor Forms helper.' );
+
+				require_once CHECKVIEW_INC_DIR . 'formhelpers/class-checkview-elementor-helper.php';
+			} else {
+				Checkview_Admin_Logs::add( 'ip-logs', 'Skipping Elementor Forms helper: Elementor Pro version ' . ( defined( 'ELEMENTOR_PRO_VERSION' ) ? ELEMENTOR_PRO_VERSION : 'unknown' ) . ' is below minimum 4.2.0.' );
+			}
 		}
 	}
 
