@@ -88,14 +88,12 @@ class CheckView {
 	public function __construct() {
 		if ( defined( 'CHECKVIEW_VERSION' ) ) {
 			$this->version = CHECKVIEW_VERSION;
-		} else {
-			$this->version = '2.3.0';
 		}
+
 		$this->plugin_name = 'checkview';
 
 		$this->load_dependencies();
 
-		$this->loader->add_action( 'init', $this, 'load_textdomain' );
 		$this->loader->add_action( 'wp_enqueue_scripts', $this, 'dequeue_scripts', 20 );
 
 		$this->define_admin_hooks();
@@ -406,19 +404,6 @@ class CheckView {
 			'rest_api_init',
 			$plugin_api,
 			'checkview_register_rest_route'
-		);
-	}
-
-	/**
-	 * Loads the CheckView text domain.
-	 *
-	 * @since 1.0.0
-	 */
-	public function load_textdomain() {
-		load_plugin_textdomain(
-			'checkview',
-			false,
-			dirname( plugin_basename( __FILE__ ) ) . '/languages/'
 		);
 	}
 
