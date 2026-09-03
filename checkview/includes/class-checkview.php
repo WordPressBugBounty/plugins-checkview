@@ -216,7 +216,7 @@ class CheckView {
 	public static function is_bot(): bool {
 		$visitor_ip  = checkview_get_visitor_ip();
 		$cv_bot_ip   = checkview_get_api_ip();
-		$is_local    = defined( 'WP_ENVIRONMENT_TYPE' ) && WP_ENVIRONMENT_TYPE === 'local';
+		$is_local    = checkview_is_local_environment();
 		$ip_verified = $is_local || ( is_array( $cv_bot_ip ) && in_array( $visitor_ip, $cv_bot_ip ) );
 
 		// Unforgeable per-request signal: the CheckView test runner attaches a
@@ -440,7 +440,7 @@ class CheckView {
 				$plugin_logs,
 				'checkview_admin_logs_settings_save'
 			);
-			$this->loader->add_action(
+			$this->loader->add_filter(
 				'admin_footer_text',
 				$plugin_settings,
 				'checkview_add_footer_admin'
