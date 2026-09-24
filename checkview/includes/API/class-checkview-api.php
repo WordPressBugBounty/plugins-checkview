@@ -2151,26 +2151,16 @@ class CheckView_Api {
 		$core_info            = array(
 			'version' => $wp_version,
 		);
-		$wp_filesystem_direct = new WP_Filesystem_Direct( array() );
-		$pad_spaces           = 45;
-		$checkview_options    = get_option( 'checkview_log_options', array() );
-
-		$logs_list = glob( Checkview_Admin_Logs::get_logs_folder() . '*.log' );
-		$logs      = array();
-		foreach ( $logs_list as $file ) {
-			$contents = $file && file_exists( $file ) ? $wp_filesystem_direct->get_contents( $file ) : '--';
-			if ( preg_match( '/\/([^\/]+)\.log$/', $file, $matches ) ) {
-				$file = $matches[1]; // Return the captured group.
-			}
-			$logs[ $file ] = $contents;
-		}
-		// Combine all data.
+		// Deliberately does NOT return log contents. This endpoint used to embed
+		// every log file in full, which is unbounded: a site with 39MB of logs
+		// exhausted a 512MB memory limit inside wp_json_encode() and the request
+		// died with a fatal, taking site-info down with it. Nothing consumes the
+		// logs from here either, and /checkview/v1/get-logs already serves them.
 		$response = array(
 			'plugins'  => $plugin_list,
 			'themes'   => $theme_list,
 			'core'     => $core_info,
 			'ajax_url' => admin_url( 'admin-ajax.php' ),
-			'logs'     => $logs,
 		);
 
 		if ( $response ) {
@@ -2272,57 +2262,28 @@ class CheckView_Api {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function checkview_saas_get_helper_logs() {
-		// Get all plugins.
-		if ( ! function_exists( 'get_plugins' ) ) {
-			require_once ABSPATH . 'wp-admin/includes/plugin.php';
-		}
-		// Define the threshold timestamp (7 days ago).
-		$threshold_time = strtotime( '-7 days' );
-
-		$wp_filesystem_direct = new WP_Filesystem_Direct( array() );
-		$pad_spaces           = 45;
-		$checkview_options    = get_option( 'checkview_log_options', array() );
-
+		// The daily cleanup cron (purge_expired_logs) bounds how many files
+		// live here, so this endpoint no longer prunes or age-filters; it is a
+		// pure read. tail_file() caps each read so a noisy day cannot push the
+		// response toward the memory cliff site-info used to hit.
 		$logs_list = glob( Checkview_Admin_Logs::get_logs_folder() . '*.log' );
-		$logs      = array();
-		foreach ( $logs_list as $file ) {
-			$contents = $file && file_exists( $file ) ? $wp_filesystem_direct->get_contents( $file ) : '--';
-			if ( preg_match( '/\/([^\/]+)\.log$/', $file, $matche ) ) {
-				// Extract the date from the filename (e.g., log-YYYY-MM-DD.log).
-				if ( preg_match( '/log-(\d{4}-\d{2}-\d{2})\.log$/', $file, $matches ) ) {
-					$file_date = strtotime( $matches[1] );
 
-					// If the file's date is older than 7 days, delete the file.
-					if ( $file_date < $threshold_time ) {
-						unlink( $file );
-					} else {
-						$file          = $matche[1]; // Return the captured group.
-						$logs[ $file ] = $contents;
-					}
-				} else {
-					unlink( $file );
-				}
+		$logs = array();
+		foreach ( (array) $logs_list as $file ) {
+			if ( preg_match( '/\/([^\/]+)\.log$/', $file, $matche ) ) {
+				$logs[ $matche[1] ] = Checkview_Admin_Logs::tail_file( $file );
 			}
 		}
-		// Combine all data.
-		$response = array(
-			'logs' => $logs,
+
+		return new WP_REST_Response(
+			array(
+				'status'        => 200,
+				'response'      => esc_html__( 'Successfully retrieved the site info.', 'checkview' ),
+				'body_response' => array(
+					'logs' => $logs,
+				),
+			),
 		);
-		if ( $response ) {
-			return new WP_REST_Response(
-				array(
-					'status'        => 200,
-					'response'      => esc_html__( 'Successfully retrieved the site info.', 'checkview' ),
-					'body_response' => $response,
-				)
-			);
-		} else {
-			Checkview_Admin_Logs::add( 'api-logs', sanitize_text_field( 'Failed to retrieve the site info.' ) );
-			return new WP_Error(
-				400,
-				esc_html__( 'An error occurred while processing your request.', 'checkview' ),
-			);
-		}
 	}
 
 	/**
