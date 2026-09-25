@@ -7,7 +7,7 @@ Tested up to: 7.1
 Requires PHP: 8.0
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
-Stable tag: 2.4.2
+Stable tag: 2.4.3
 
 [CheckView](https://checkview.io/) automates WordPress form and WooCommerce testing, monitoring key flows to catch failures early before they cost you leads or sales everyday.
 
@@ -21,7 +21,7 @@ Built specifically for WordPress and WooCommerce, CheckView helps site owners, d
 
 == Works Well With ==
 
-CheckView works well with popular WordPress form and eCommerce plugins including Contact Form 7, WPForms, Gravity Forms, Fluent Forms, Ninja Forms, Formidable Forms, WS Form, and WooCommerce. 
+CheckView works well with popular WordPress form and eCommerce plugins including Contact Form 7, WPForms, Gravity Forms, Fluent Forms, Ninja Forms, Formidable Forms, Forminator, WS Form, and WooCommerce.
 
 == Important == 
 
@@ -122,7 +122,7 @@ Yes. A [CheckView](https://checkview.io/) account is required to enable automate
 
 = Which form plugins does CheckView support? =
 
-CheckView supports automated testing for many popular WordPress form plugins, including WS Form, WPForms, Ninja Forms, Gravity Forms, Formidable Forms, Contact Form 7, and Fluent Forms.
+CheckView supports automated testing for many popular WordPress form plugins, including WS Form, WPForms, Ninja Forms, Gravity Forms, Formidable Forms, Forminator, Contact Form 7, and Fluent Forms.
 
 = If my preferred form plugin is not listed, can I still use CheckView? =
 
@@ -204,6 +204,10 @@ Support and test configuration are handled through the CheckView platform. Pleas
 3. CheckView general settings.
 
 == Changelog ==
+
+= 2.4.3 =
+* Stop changing PHP's error reporting level on REST requests. It applied to every REST request on the site, not only CheckView's, and turned deprecation notices on (and warnings off) in the site's PHP error log.
+* Logs: Stop writing a "bot check" log line for every request that carries a CheckView test ID but no request signature. Anyone could trigger those by adding the parameter to a URL. One such line is still kept every 10 minutes, so a host that strips the signature header still leaves a trace.
 
 = 2.4.2 =
 * Logs: Save any PHP fatal error that happens during a test, so a failed test can be looked into without server log access. Credentials are hidden before the error is sent.
