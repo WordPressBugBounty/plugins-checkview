@@ -97,7 +97,7 @@ if ( ! class_exists( 'Checkview_Wpforms_Helper' ) ) {
 				'__return_false'
 			);
 
-			if ( defined( 'TEST_EMAIL' ) ) {
+			if ( defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
 				// change email to send to our test account.
 				add_filter(
 					'wpforms_entry_email_atts',
@@ -154,6 +154,40 @@ if ( ! class_exists( 'Checkview_Wpforms_Helper' ) ) {
 				1,
 				3
 			);
+
+			// WP Armour adds its own validation error rather than flagging the
+			// submission as spam, so the captcha/spam bypasses above never see it.
+			//
+			// On `init` at PHP_INT_MAX because WP Armour includes its
+			// integrations from an `init` callback at the default priority
+			// (wp-armour.php:17-24), the same priority this helper loads at.
+			add_action(
+				'init',
+				array( $this, 'checkview_unhook_wp_armour' ),
+				PHP_INT_MAX
+			);
+		}
+
+		/**
+		 * Removes WP Armour's WPForms validation callback for this request.
+		 *
+		 * Degrades to a logged no-op — nothing removed and no such function means
+		 * the plugin is absent; the function present but not removable means it
+		 * changed priority or was renamed, which is worth surfacing.
+		 *
+		 * @since 2.3.0
+		 *
+		 * @return void
+		 */
+		public function checkview_unhook_wp_armour() {
+			if ( remove_filter( 'wpforms_process_before', 'wpa_wpforms_extra_validation', 10 ) ) {
+				Checkview_Admin_Logs::add( 'ip-logs', 'Unhooked WP Armour from wpforms_process_before for this CheckView test.' );
+				return;
+			}
+
+			if ( function_exists( 'wpa_wpforms_extra_validation' ) ) {
+				Checkview_Admin_Logs::add( 'ip-logs', 'WP Armour detected but its wpforms_process_before callback was not removable (priority changed or renamed?) — WPForms submissions may still be rejected as spam.' );
+			}
 		}
 
 		/**
@@ -190,7 +224,7 @@ if ( ! class_exists( 'Checkview_Wpforms_Helper' ) ) {
 		 * @return void
 		 */
 		public function checkview_wpforms_disable_addons( $fields, $entry, $form_data ) {
-			$cv_test_id = get_checkview_test_id();
+			$cv_test_id = checkview_get_test_id();
 			if ( ! $cv_test_id || 'true' !== get_option( 'disable_actions_' . $cv_test_id, false ) ) {
 				return;
 			}
@@ -218,7 +252,7 @@ if ( ! class_exists( 'Checkview_Wpforms_Helper' ) ) {
 							continue;
 						}
 						unset( $wp_filter[ $hook ]->callbacks[ $priority ][ $cb_id ] );
-						$removed_count++;
+						++$removed_count;
 					}
 					if ( empty( $wp_filter[ $hook ]->callbacks[ $priority ] ) ) {
 						unset( $wp_filter[ $hook ]->callbacks[ $priority ] );
@@ -247,7 +281,7 @@ if ( ! class_exists( 'Checkview_Wpforms_Helper' ) ) {
 		/**
 		 * Disable WP Forms frontend CAPTCHA API.
 		 *
-		 * @param $captcha_api string CAPTCHA API.
+		 * @param string $captcha_api CAPTCHA API.
 		 *
 		 * @return string
 		 *
@@ -256,7 +290,7 @@ if ( ! class_exists( 'Checkview_Wpforms_Helper' ) ) {
 		public function checkview_disable_frontend_captcha_api( $captcha_api ) {
 			$captcha_settings = wpforms_get_captcha_settings();
 
-			if ( $captcha_settings['provider'] === 'turnstile' ) {
+			if ( 'turnstile' === $captcha_settings['provider'] ) {
 				return '';
 			}
 
@@ -266,29 +300,29 @@ if ( ! class_exists( 'Checkview_Wpforms_Helper' ) ) {
 		/**
 		 * Injects testing email address.
 		 *
-		 * Append-mode (when `cv_should_allow_original_recipients()` is true):
-		 * adds TEST_EMAIL to the existing recipient list so both the real
+		 * Append-mode (when `checkview_should_allow_original_recipients()` is true):
+		 * adds CHECKVIEW_TEST_EMAIL to the existing recipient list so both the real
 		 * recipient and CheckView's test inbox receive the email. Also injects
-		 * Reply-To to defend against MTA variance — Postmark sees TEST_EMAIL in
-		 * the ReplyTo header even if the customer's MTA strips it from To.
+		 * Reply-To to defend against MTA variance — Postmark sees CHECKVIEW_TEST_EMAIL
+		 * in the ReplyTo header even if the customer's MTA strips it from To.
 		 *
 		 * Replace-mode (default): preserves existing behavior of routing to
-		 * TEST_EMAIL only.
+		 * CHECKVIEW_TEST_EMAIL only.
 		 *
 		 * @param array $email Email address details.
 		 * @return array
 		 */
 		public function checkview_inject_email( $email ) {
 			// New: append-mode branch — deliver to BOTH real recipient and test inbox.
-			if ( cv_should_allow_original_recipients() ) {
-				$email['address']        = cv_append_test_email_array( $email['address'] );
-				$email['replyto']        = $this->cv_append_replyto( $email['replyto'] ?? '' );
+			if ( checkview_should_allow_original_recipients() ) {
+				$email['address'] = checkview_append_test_email_array( $email['address'] );
+				$email['replyto'] = $this->cv_append_replyto( $email['replyto'] ?? '' );
 				// Sanitize CC entries to prevent header injection if the
 				// customer's form data contains embedded CRLF in CC addresses.
-				$cc                      = $email['carboncopy'] ?? array();
-				$email['carboncopy']     = is_array( $cc )
-					? array_map( 'cv_sanitize_crlf', $cc )
-					: cv_sanitize_crlf( $cc );
+				$cc                  = $email['carboncopy'] ?? array();
+				$email['carboncopy'] = is_array( $cc )
+					? array_map( 'checkview_sanitize_crlf', $cc )
+					: checkview_sanitize_crlf( $cc );
 
 				Checkview_Admin_Logs::add( 'ip-logs', 'Append-mode submission recipient email address: ' . wp_json_encode( $email['address'] ) );
 
@@ -296,17 +330,17 @@ if ( ! class_exists( 'Checkview_Wpforms_Helper' ) ) {
 			}
 
 			// Existing replace-mode behavior (preserved unchanged).
-			$cv_test_id = get_checkview_test_id();
-			if ( ! $cv_test_id || 'true' != get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
+			$cv_test_id = checkview_get_test_id();
+			if ( ! $cv_test_id || 'true' !== get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
 				$count = count( $email['address'] );
 				for ( $i = 0; $i < $count; $i++ ) {
-					$email['address'][ $i ]    = TEST_EMAIL;
+					$email['address'][ $i ]    = CHECKVIEW_TEST_EMAIL;
 					$email['carboncopy'][ $i ] = '';
 				}
 			} elseif ( is_array( $email['address'] ) ) {
-				$email['address'][] = TEST_EMAIL;
+				$email['address'][] = CHECKVIEW_TEST_EMAIL;
 			} else {
-				$email['address'] .= ', ' . TEST_EMAIL;
+				$email['address'] .= ', ' . CHECKVIEW_TEST_EMAIL;
 			}
 
 			Checkview_Admin_Logs::add( 'ip-logs', 'Submission recipient email address: ' . wp_json_encode( $email['address'] ?? null ) );
@@ -315,26 +349,26 @@ if ( ! class_exists( 'Checkview_Wpforms_Helper' ) ) {
 		}
 
 		/**
-		 * Appends TEST_EMAIL to a Reply-To string with dedup.
+		 * Appends CHECKVIEW_TEST_EMAIL to a Reply-To string with dedup.
 		 *
 		 * WPForms' `replyto` is a single string (not array). Append rather
 		 * than replace so existing form-configured Reply-To is preserved.
 		 *
 		 * @param string $existing Existing reply-to value (may be empty).
-		 * @return string Reply-To with TEST_EMAIL appended.
+		 * @return string Reply-To with CHECKVIEW_TEST_EMAIL appended.
 		 */
 		private function cv_append_replyto( $existing ) {
-			if ( ! defined( 'TEST_EMAIL' ) ) {
+			if ( ! defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
 				return $existing;
 			}
 			if ( empty( $existing ) ) {
-				return TEST_EMAIL;
+				return CHECKVIEW_TEST_EMAIL;
 			}
-			if ( cv_recipients_contain_test_email( $existing ) ) {
-				return cv_sanitize_crlf( $existing );
+			if ( checkview_recipients_contain_test_email( $existing ) ) {
+				return checkview_sanitize_crlf( $existing );
 			}
-			$sanitized = cv_sanitize_crlf( $existing );
-			return rtrim( $sanitized, ", \t" ) . ', ' . TEST_EMAIL;
+			$sanitized = checkview_sanitize_crlf( $existing );
+			return rtrim( $sanitized, ", \t" ) . ', ' . CHECKVIEW_TEST_EMAIL;
 		}
 		/**
 		 * Stores the test results and finishes the testing session.
@@ -356,21 +390,21 @@ if ( ! class_exists( 'Checkview_Wpforms_Helper' ) ) {
 				include_once ABSPATH . 'wp-admin/includes/plugin.php';
 			}
 
-			$form_id = $form_data['id'];
-			$checkview_test_id = get_checkview_test_id();
+			$form_id           = $form_data['id'];
+			$checkview_test_id = checkview_get_test_id();
 
 			if ( empty( $checkview_test_id ) ) {
 				$checkview_test_id = $form_id . gmdate( 'Ymd' );
 			}
 
 			$entry_data  = array(
-				'form_id' => $form_id,
-				'status' => 'publish',
-				'source_url' => isset( $_SERVER['HTTP_REFERER'] ) ? substr( sanitize_url( wp_unslash( $_SERVER['HTTP_REFERER'] ) ), 0, 200 ) : '',
+				'form_id'      => $form_id,
+				'status'       => 'publish',
+				'source_url'   => isset( $_SERVER['HTTP_REFERER'] ) ? substr( sanitize_url( wp_unslash( $_SERVER['HTTP_REFERER'] ) ), 0, 200 ) : '',
 				'date_created' => current_time( 'mysql' ),
 				'date_updated' => current_time( 'mysql' ),
-				'uid' => $checkview_test_id,
-				'form_type' => 'WpForms',
+				'uid'          => $checkview_test_id,
+				'form_type'    => 'WpForms',
 			);
 			$entry_table = $wpdb->prefix . 'cv_entry';
 
@@ -384,20 +418,20 @@ if ( ! class_exists( 'Checkview_Wpforms_Helper' ) ) {
 
 			// Skip meta loop when parent insert failed: $wpdb->insert_id
 			// is 0, meta rows would be orphaned with entry_id=0.
-			// WPForms entry delete and complete_checkview_test() below still run.
+			// WPForms entry delete and checkview_complete_test() below still run.
 			if ( $result ) {
 				$inserted_entry_id = $wpdb->insert_id;
 				$entry_meta_table  = $wpdb->prefix . 'cv_entry_meta';
 				$field_id_prefix   = 'wpforms-' . $form_id . '-field_';
-				$count = 0;
+				$count             = 0;
 
 				foreach ( $form_fields as $field ) {
 					if ( ! isset( $field['value'] ) || '' === $field['value'] ) {
 						continue;
 					}
 
-					$field_value = is_array( $field['value'] ) ? serialize( $field['value'] ) : $field['value'];
-					$type = isset( $field['type'] ) ? $field['type'] : '';
+					$field_value = is_array( $field['value'] ) ? maybe_serialize( $field['value'] ) : $field['value'];
+					$type        = isset( $field['type'] ) ? $field['type'] : '';
 
 					switch ( $type ) {
 						case 'name':
@@ -417,100 +451,114 @@ if ( ! class_exists( 'Checkview_Wpforms_Helper' ) ) {
 									'uid'        => $checkview_test_id,
 									'form_id'    => $form_id,
 									'entry_id'   => $inserted_entry_id,
+									// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
 									'meta_key'   => $field_id_prefix . $field['id'],
 									'meta_value' => $first,
+									// phpcs:enable WordPress.DB.SlowDBQuery
 								);
 
 								$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 								if ( $result ) {
-									$count++;
+									++$count;
 								}
 							} elseif ( '' === $middle ) {
 								$entry_metadata = array(
 									'uid'        => $checkview_test_id,
 									'form_id'    => $form_id,
 									'entry_id'   => $inserted_entry_id,
+									// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
 									'meta_key'   => $field_id_prefix . $field['id'],
 									'meta_value' => $first,
+									// phpcs:enable WordPress.DB.SlowDBQuery
 								);
 
 								$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 								if ( $result ) {
-									$count++;
+									++$count;
 								}
 
 								$entry_metadata = array(
-									'uid' => $checkview_test_id,
-									'form_id' => $form_id,
-									'entry_id' => $inserted_entry_id,
-									'meta_key' => $field_id_prefix . $field['id'] . '-last',
+									'uid'        => $checkview_test_id,
+									'form_id'    => $form_id,
+									'entry_id'   => $inserted_entry_id,
+									// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
+									'meta_key'   => $field_id_prefix . $field['id'] . '-last',
 									'meta_value' => $last,
+									// phpcs:enable WordPress.DB.SlowDBQuery
 								);
 
 								$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 								if ( $result ) {
-									$count++;
+									++$count;
 								}
 							} else {
 								$entry_metadata = array(
-									'uid' => $checkview_test_id,
-									'form_id' => $form_id,
-									'entry_id' => $inserted_entry_id,
-									'meta_key' => $field_id_prefix . $field['id'],
+									'uid'        => $checkview_test_id,
+									'form_id'    => $form_id,
+									'entry_id'   => $inserted_entry_id,
+									// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
+									'meta_key'   => $field_id_prefix . $field['id'],
 									'meta_value' => $first,
+									// phpcs:enable WordPress.DB.SlowDBQuery
 								);
 
 								$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 								if ( $result ) {
-									$count++;
+									++$count;
 								}
 
 								$entry_metadata = array(
-									'uid' => $checkview_test_id,
-									'form_id' => $form_id,
-									'entry_id' => $inserted_entry_id,
-									'meta_key' => $field_id_prefix . $field['id'] . '-middle',
+									'uid'        => $checkview_test_id,
+									'form_id'    => $form_id,
+									'entry_id'   => $inserted_entry_id,
+									// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
+									'meta_key'   => $field_id_prefix . $field['id'] . '-middle',
 									'meta_value' => $middle,
+									// phpcs:enable WordPress.DB.SlowDBQuery
 								);
 
 								$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 								if ( $result ) {
-									$count++;
+									++$count;
 								}
 
 								$entry_metadata = array(
-									'uid' => $checkview_test_id,
-									'form_id' => $form_id,
-									'entry_id' => $inserted_entry_id,
-									'meta_key' => $field_id_prefix . $field['id'] . '-last',
+									'uid'        => $checkview_test_id,
+									'form_id'    => $form_id,
+									'entry_id'   => $inserted_entry_id,
+									// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
+									'meta_key'   => $field_id_prefix . $field['id'] . '-last',
 									'meta_value' => $last,
+									// phpcs:enable WordPress.DB.SlowDBQuery
 								);
 
 								$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 								if ( $result ) {
-									$count++;
+									++$count;
 								}
 							}
 							break;
 						default:
 							$entry_metadata = array(
-								'uid' => $checkview_test_id,
-								'form_id' => $form_id,
-								'entry_id' => $inserted_entry_id,
-								'meta_key' => $field_id_prefix . $field['id'],
+								'uid'        => $checkview_test_id,
+								'form_id'    => $form_id,
+								'entry_id'   => $inserted_entry_id,
+								// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
+								'meta_key'   => $field_id_prefix . $field['id'],
 								'meta_value' => $field_value,
+								// phpcs:enable WordPress.DB.SlowDBQuery
 							);
 
 							$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 							if ( $result ) {
-								$count++;
+								++$count;
 							}
 
 							break;
@@ -519,10 +567,8 @@ if ( ! class_exists( 'Checkview_Wpforms_Helper' ) ) {
 
 				if ( $count > 0 ) {
 					Checkview_Admin_Logs::add( 'ip-logs', 'Cloned submission entry meta data (inserted ' . $count . ' rows into ' . $entry_meta_table . ').' );
-				} else {
-					if ( count( $form_fields ) > 0 ) {
+				} elseif ( count( $form_fields ) > 0 ) {
 						Checkview_Admin_Logs::add( 'ip-logs', 'Failed to clone submission entry meta data. wpdb->last_error=[' . $wpdb->last_error . ']' );
-					}
 				}
 			}
 
@@ -546,7 +592,7 @@ if ( ! class_exists( 'Checkview_Wpforms_Helper' ) ) {
 				);
 			}
 
-			complete_checkview_test( $checkview_test_id );
+			checkview_complete_test( $checkview_test_id );
 		}
 		/**
 		 * Disable Custom CAPTCHA in WPForms.

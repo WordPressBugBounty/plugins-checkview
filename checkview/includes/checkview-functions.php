@@ -82,6 +82,7 @@ if ( ! function_exists( 'checkview_dbdelta_or_query' ) ) {
 				// Checkview_Admin_Logs isn't loaded yet (e.g. during
 				// activation). Surface to PHP's error log so the failure
 				// isn't silently swallowed.
+				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Desired production debug logging.
 				error_log( '[CheckView] ' . $msg );
 			}
 		}
@@ -95,11 +96,11 @@ if ( ! function_exists( 'checkview_ensure_trailing_slash' ) ) {
 	 *
 	 * @since 2.0.13
 	 *
-	 * @param string $string String to ensure trailing slash.
+	 * @param string $value String to ensure trailing slash.
 	 * @return string
 	 */
-	function checkview_ensure_trailing_slash( $string ) {
-		return rtrim( $string, '/' ) . '/';
+	function checkview_ensure_trailing_slash( $value ) {
+		return rtrim( $value, '/' ) . '/';
 	}
 }
 
@@ -152,7 +153,7 @@ if ( ! function_exists( 'checkview_validate_jwt_token' ) ) {
 			$leeway = apply_filters( 'checkview_jwt_leeway', 5 );
 
 			JWT::$leeway = $leeway;
-			$decoded = JWT::decode( $token, new Key( $key, 'RS256' ) );
+			$decoded     = JWT::decode( $token, new Key( $key, 'RS256' ) );
 		} catch ( Exception $e ) {
 			Checkview_Admin_Logs::add( 'api-logs', esc_html( $e->getMessage() ) );
 			return new WP_Error(
@@ -161,7 +162,7 @@ if ( ! function_exists( 'checkview_validate_jwt_token' ) ) {
 				array( 'status' => 401 )
 			);
 		}
-		$jwt = (array) $decoded;
+		$jwt              = (array) $decoded;
 		$default_site_url = checkview_ensure_trailing_slash( get_bloginfo( 'url' ) );
 
 		/**
@@ -185,7 +186,7 @@ if ( ! function_exists( 'checkview_validate_jwt_token' ) ) {
 			return false;
 		}
 
-		// If empty, return false.
+		// Reject tokens without a nonce.
 		if ( empty( $jwt['_checkview_nonce'] ) ) {
 			Checkview_Admin_Logs::add( 'api-logs', 'Nonce Absent.' );
 			return false;
@@ -195,7 +196,8 @@ if ( ! function_exists( 'checkview_validate_jwt_token' ) ) {
 		return $jwt['_checkview_nonce'];
 	}
 }
-if ( ! function_exists( 'get_checkview_test_id' ) ) {
+
+if ( ! function_exists( 'checkview_get_test_id' ) ) {
 	/**
 	 * Gets a test ID from the request.
 	 *
@@ -204,7 +206,8 @@ if ( ! function_exists( 'get_checkview_test_id' ) ) {
 	 *
 	 * @return string|false Test ID, or `false` on failure.
 	 */
-	function get_checkview_test_id() {
+	function checkview_get_test_id() {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only CheckView test param from SaaS request; no nonce possible.
 		$cv_test_id = isset( $_REQUEST[ CheckView::PARAM_TEST_ID ] ) ? sanitize_text_field( wp_unslash( $_REQUEST[ CheckView::PARAM_TEST_ID ] ) ) : '';
 
 		if ( ! empty( $cv_test_id ) ) {
@@ -234,7 +237,7 @@ if ( ! function_exists( 'get_checkview_test_id' ) ) {
 	}
 }
 
-if ( ! function_exists( 'complete_checkview_test' ) ) {
+if ( ! function_exists( 'checkview_complete_test' ) ) {
 	/**
 	 * Concludes a test.
 	 *
@@ -244,31 +247,31 @@ if ( ! function_exists( 'complete_checkview_test' ) ) {
 	 * @param string $checkview_test_id Test ID.
 	 * @return void
 	 */
-	function complete_checkview_test( string $checkview_test_id = '' ) {
+	function checkview_complete_test( string $checkview_test_id = '' ) {
 		global $wpdb;
 
 		Checkview_Admin_Logs::add( 'ip-logs', 'Completing test...' );
 
-		if ( ! defined( 'CV_TEST_ID' ) ) {
-			define( 'CV_TEST_ID', $checkview_test_id );
+		if ( ! defined( 'CHECKVIEW_TEST_ID' ) ) {
+			define( 'CHECKVIEW_TEST_ID', $checkview_test_id );
 		}
 
 		$session_table = $wpdb->prefix . 'cv_session';
-		$visitor_ip = checkview_get_visitor_ip();
-		$cv_session = checkview_get_cv_session( $visitor_ip, CV_TEST_ID );
+		$visitor_ip    = checkview_get_visitor_ip();
+		$cv_session    = checkview_get_cv_session( $visitor_ip, CHECKVIEW_TEST_ID );
 
 		// Stop if session not found.
 		if ( ! empty( $cv_session ) ) {
 			$test_key = $cv_session[0]['test_key'];
 
-			cv_delete_option( $test_key );
+			checkview_delete_option( $test_key );
 		}
 
 		$result = $wpdb->delete(
 			$session_table,
 			array(
 				'visitor_ip' => $visitor_ip,
-				'test_id' => $checkview_test_id,
+				'test_id'    => $checkview_test_id,
 			)
 		);
 
@@ -296,8 +299,8 @@ if ( ! function_exists( 'complete_checkview_test' ) ) {
 		if ( ! empty( $form_id ) && ! empty( $entry_id ) && ! doing_action( 'shutdown' ) ) {
 			if ( class_exists( 'WS_Form_Submit' ) ) {
 				try {
-					$ws_form_submit = new WS_Form_Submit();
-					$ws_form_submit->id = $entry_id;
+					$ws_form_submit          = new WS_Form_Submit();
+					$ws_form_submit->id      = $entry_id;
 					$ws_form_submit->form_id = $form_id;
 					$ws_form_submit->db_delete( true, true, true );
 				} catch ( \Throwable $e ) {
@@ -311,9 +314,9 @@ if ( ! function_exists( 'complete_checkview_test' ) ) {
 			}
 		}
 
-		cv_delete_option( $checkview_test_id . '_wsf_entry_id' );
-		cv_delete_option( $checkview_test_id . '_wsf_frm_id' );
-		cv_delete_option( $visitor_ip );
+		checkview_delete_option( $checkview_test_id . '_wsf_entry_id' );
+		checkview_delete_option( $checkview_test_id . '_wsf_frm_id' );
+		checkview_delete_option( $visitor_ip );
 
 		// setcookie() silently fails when headers have been sent (which is the
 		// norm at shutdown time, the new deferred caller). Form-helper sync
@@ -326,28 +329,28 @@ if ( ! function_exists( 'complete_checkview_test' ) ) {
 			setcookie( CheckView::PARAM_TEST_TYPE, '', time() - 6600, COOKIEPATH, COOKIE_DOMAIN );
 		}
 
-		cv_delete_option( 'disable_actions_' . $checkview_test_id );
-		cv_delete_option( 'disable_email_receipt_' . $checkview_test_id );
-		cv_delete_option( 'disable_webhooks_' . $checkview_test_id );
-		cv_delete_option( 'allow_original_recipients_' . $checkview_test_id );
-		cv_delete_option( 'allow_original_recipients_set_at_' . $checkview_test_id );
+		checkview_delete_option( 'disable_actions_' . $checkview_test_id );
+		checkview_delete_option( 'disable_email_receipt_' . $checkview_test_id );
+		checkview_delete_option( 'disable_webhooks_' . $checkview_test_id );
+		checkview_delete_option( 'allow_original_recipients_' . $checkview_test_id );
+		checkview_delete_option( 'allow_original_recipients_set_at_' . $checkview_test_id );
 
 		// Legacy cleanup: remove global options from before per-test scoping.
-		cv_delete_option( 'disable_actions' );
-		cv_delete_option( 'disable_email_receipt' );
-		cv_delete_option( 'disable_webhooks' );
-		cv_delete_option( 'allow_original_recipients' );
-		cv_delete_option( 'allow_original_recipients_set_at' );
+		checkview_delete_option( 'disable_actions' );
+		checkview_delete_option( 'disable_email_receipt' );
+		checkview_delete_option( 'disable_webhooks' );
+		checkview_delete_option( 'allow_original_recipients' );
+		checkview_delete_option( 'allow_original_recipients_set_at' );
 
 		// Legacy cleanup: remove orphaned captcha backup keys from old code.
-		cv_delete_option( 'checkview_wpforms_turnstile-site-key' );
-		cv_delete_option( 'checkview_wpforms_turnstile-secret-key' );
+		checkview_delete_option( 'checkview_wpforms_turnstile-site-key' );
+		checkview_delete_option( 'checkview_wpforms_turnstile-secret-key' );
 
 		Checkview_Admin_Logs::add( 'ip-logs', 'Test complete.' );
 	}
 }
 
-if ( ! function_exists( 'cv_is_suppressible_test_order' ) ) {
+if ( ! function_exists( 'checkview_is_suppressible_test_order' ) ) {
 	/**
 	 * Determines whether webhooks/actions on a WooCommerce order should be
 	 * suppressed because the order belongs to an active CheckView test.
@@ -355,11 +358,11 @@ if ( ! function_exists( 'cv_is_suppressible_test_order' ) ) {
 	 * Implements the safety invariant: suppression engages only when BOTH
 	 *   (1) the order has a valid `checkview_test_id` UUID meta (set by
 	 *       `checkview_stamp_order_meta` at order creation time when
-	 *       `CV_TEST_ID` was defined), AND
+	 *       `CHECKVIEW_TEST_ID` was defined), AND
 	 *   (2) a per-test option (`disable_webhooks_<uuid>` or
 	 *       `disable_actions_<uuid>`) is still set to `'true'` (test is still
 	 *       active in our system; cleanup happens at request end via
-	 *       `complete_checkview_test`).
+	 *       `checkview_complete_test`).
 	 *
 	 * Either condition missing → fall through, deliver the webhook / fire the
 	 * action. Default-on safety, not default-off.
@@ -382,7 +385,7 @@ if ( ! function_exists( 'cv_is_suppressible_test_order' ) ) {
 	 *
 	 * @return bool True if suppression should engage, false otherwise.
 	 */
-	function cv_is_suppressible_test_order( $order ) {
+	function checkview_is_suppressible_test_order( $order ) {
 		// H8 kill switch — incident response escape hatch.
 		if ( get_option( 'cv_suppression_kill_switch' ) === 'true' ) {
 			return false;
@@ -395,7 +398,7 @@ if ( ! function_exists( 'cv_is_suppressible_test_order' ) ) {
 			if ( is_numeric( $order ) ) {
 				$order = wc_get_order( $order );
 			} else {
-				return false; // not an order ID we can resolve
+				return false; // Not an order ID we can resolve.
 			}
 		}
 		if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) ) {
@@ -502,7 +505,7 @@ if ( ! function_exists( 'checkview_get_api_ip' ) ) {
 			);
 
 			if ( is_wp_error( $request ) ) {
-				$code = $request->get_error_code();
+				$code    = $request->get_error_code();
 				$message = $request->get_error_message();
 
 				Checkview_Admin_Logs::add( 'ip-logs', 'Request for new IP addresses failed with code [' . $code . ']. Message: ' . $message );
@@ -607,7 +610,7 @@ if ( ! function_exists( 'checkview_get_visitor_ip' ) ) {
 		// Check view Bot IP.
 		$cv_bot_ip  = checkview_get_api_ip();
 		$ip_options = checkview_get_custom_header_keys_for_ip();
-		$ip = '';
+		$ip         = '';
 
 		foreach ( $ip_options as $key ) {
 			if ( ! isset( $_SERVER[ $key ] ) ) {
@@ -618,9 +621,9 @@ if ( ! function_exists( 'checkview_get_visitor_ip' ) ) {
 
 			foreach ( explode( ',', $key ) as $ip ) {
 				$ip = trim( $ip );
-				$ip = preg_replace('/:\d{1,5}$/', '', $ip);
+				$ip = preg_replace( '/:\d{1,5}$/', '', $ip );
 
-				if ( $ip !== null && checkview_validate_ip( $ip ) && is_array( $cv_bot_ip ) && in_array( $ip, $cv_bot_ip ) ) {
+				if ( null !== $ip && checkview_validate_ip( $ip ) && is_array( $cv_bot_ip ) && in_array( $ip, $cv_bot_ip, true ) ) {
 					return sanitize_text_field( $ip );
 				}
 			}
@@ -647,15 +650,19 @@ if ( ! function_exists( 'checkview_get_cleantalk_whitelisted_ips' ) ) {
 
 		$spbc_data  = get_option( 'cleantalk_data', array() );
 		$user_token = $spbc_data['user_token'];
-		$api_url = "https://api.cleantalk.org/?method_name=private_list_get&user_token=$user_token&service_type=" . $service_type . '&product_id=1&service_id=' . $service_id;
+		$api_url    = "https://api.cleantalk.org/?method_name=private_list_get&user_token=$user_token&service_type=" . $service_type . '&product_id=1&service_id=' . $service_id;
 
-		$response = wp_remote_get( $api_url, array(
-			'timeout' => 20,
-		) );
+		$response = wp_remote_get(
+			$api_url,
+			array(
+				'timeout' => 20,
+			)
+		);
 
 		if ( is_wp_error( $response ) ) {
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Desired production debug logging.
 			error_log( 'Error fetching whitelisted IPs: ' . $response->get_error_message() );
-			Checkview_Admin_Logs::add( 'ip-logs', esc_html__( 'Error fetching whitelisted IPs: ' . $response->get_error_message(), 'checkview' ) );
+			Checkview_Admin_Logs::add( 'ip-logs', esc_html( 'Error fetching whitelisted IPs: ' . $response->get_error_message() ) );
 
 			return false;
 		}
@@ -691,13 +698,14 @@ if ( ! function_exists( 'checkview_whitelist_api_ip' ) ) {
 	 * Whitelists CheckView in a CleanTalk account via their API.
 	 *
 	 * @since 1.0.0
-	 * 
+	 *
 	 * @return null
 	 */
 	function checkview_whitelist_api_ip() {
 		global $apbct;
 
-		if ( ! isset($apbct->data['service_id'] ) ) {
+		if ( ! isset( $apbct->data['service_id'] ) ) {
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Desired production debug logging.
 			error_log( 'CleanTalk service ID could not be found.' );
 		}
 
@@ -705,26 +713,28 @@ if ( ! function_exists( 'checkview_whitelist_api_ip' ) ) {
 		$spbc_data  = get_option( 'cleantalk_data', array() );
 		$user_token = $spbc_data['user_token'];
 
-		if ( empty( $user_token ) || ( function_exists('apbct_api_key__is_correct') && ! apbct_api_key__is_correct() ) ) {
+		if ( empty( $user_token ) || ( function_exists( 'apbct_api_key__is_correct' ) && ! apbct_api_key__is_correct() ) ) {
 			return null;
 		}
 
 		$current_ip = checkview_get_visitor_ip();
 		$api_ip     = checkview_get_api_ip();
 
-		if ( is_array( $api_ip ) && in_array( $current_ip, $api_ip ) ) {
-			$home_url = parse_url( home_url() ); // Returns `false`, `null`, or an assosiative array.
+		if ( is_array( $api_ip ) && in_array( $current_ip, $api_ip, true ) ) {
+			$home_url = wp_parse_url( home_url() ); // Returns `false`, `null`, or an assosiative array.
 
-			if ( $home_url === false || $home_url === null ) {
+			if ( false === $home_url || null === $home_url ) {
+				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Desired production debug logging.
 				error_log( sprintf( 'Error parsing the home url [%1$s].', home_url() ) );
 				Checkview_Admin_Logs::add( 'ip-logs', sprintf( 'Error parsing the home url [%1$s].', home_url() ) );
 
 				return null;
 			}
 
-			if ( is_array( $home_url ) && ! isset( $home_url[ 'host' ] ) ) {
-				error_log( sprintf( 'Cannot determine host when parsing URL [%1$s].', json_encode( $home_url ) ) );
-				Checkview_Admin_Logs::add( 'ip-logs', sprintf( 'Cannot determine host when parsing URL [%1$s].', json_encode( $home_url ) ) );
+			if ( is_array( $home_url ) && ! isset( $home_url['host'] ) ) {
+				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Desired production debug logging.
+				error_log( sprintf( 'Cannot determine host when parsing URL [%1$s].', wp_json_encode( $home_url ) ) );
+				Checkview_Admin_Logs::add( 'ip-logs', sprintf( 'Cannot determine host when parsing URL [%1$s].', wp_json_encode( $home_url ) ) );
 
 				return null;
 			}
@@ -736,53 +746,61 @@ if ( ! function_exists( 'checkview_whitelist_api_ip' ) ) {
 
 			if ( is_array( $antispam_ips ) ) {
 				if ( ! isset( $antispam_ips[ $host_name ] ) ) {
+					// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Desired production debug logging.
 					error_log( 'No host name found in Antispam IP list.' );
 
 					// If the host name is not in the whitelist, request to add our IPs/hosts.
 					checkview_add_to_cleantalk( $user_token, 'antispam', $current_ip, 1, $service_id );
 					checkview_add_to_cleantalk( $user_token, 'antispam', 'checkview.io', 4, $service_id );
 					checkview_add_to_cleantalk( $user_token, 'antispam', 'test-mail.checkview.io', 4, $service_id );
-				} else {
+				} elseif ( is_array( $antispam_ips[ $host_name ] ) ) {
 					// Otherwise, check for our IPs/hosts individually, and request to add them if needed.
-					if ( is_array( $antispam_ips[ $host_name ] ) ) {
-						$has_current_ip = array_find( $antispam_ips[ $host_name ], function( $value, $key ) use ($current_ip) {
+					$has_current_ip = array_find(
+						$antispam_ips[ $host_name ],
+						function ( $value ) use ( $current_ip ) {
 							$position = strpos( $value, $current_ip );
 
-							return $position === false ? false : true;
-						});
-
-						if ( ! $has_current_ip ) {
-							checkview_add_to_cleantalk( $user_token, 'antispam', $current_ip, 1, $service_id );
+							return false !== $position;
 						}
+					);
 
-						$has_checkview_hostname = array_find( $antispam_ips[ $host_name ], function( $value, $key ) {
+					if ( ! $has_current_ip ) {
+						checkview_add_to_cleantalk( $user_token, 'antispam', $current_ip, 1, $service_id );
+					}
+
+					$has_checkview_hostname = array_find(
+						$antispam_ips[ $host_name ],
+						function ( $value ) {
 							$position = strpos( $value, 'checkview.io' );
 
-							// Skip test-mail domain
-							if ($value === 'test-mail.checkview.io') {
+							if ( 'test-mail.checkview.io' === $value ) {
 								return false;
 							}
 
-							return $position === false ? false : true;
-						});
-
-						if ( ! $has_checkview_hostname ) {
-							checkview_add_to_cleantalk( $user_token, 'antispam', 'checkview.io', 4, $service_id );
+							return false !== $position;
 						}
+					);
 
-						$has_mail_hostname = array_find( $antispam_ips[ $host_name ], function( $value, $key ) {
+					if ( ! $has_checkview_hostname ) {
+						checkview_add_to_cleantalk( $user_token, 'antispam', 'checkview.io', 4, $service_id );
+					}
+
+					$has_mail_hostname = array_find(
+						$antispam_ips[ $host_name ],
+						function ( $value ) {
 							$position = strpos( $value, 'test-mail.checkview.io' );
 
-							return $position === false ? false : true;
-						});
-
-						if ( ! $has_mail_hostname ) {
-							checkview_add_to_cleantalk( $user_token, 'antispam', 'test-mail.checkview.io', 4, $service_id );
+							return false !== $position;
 						}
-					} else {
-						error_log( sprintf( 'The value for antispam IPs at hostname [%1$s] is not an array.', $host_name ) );
-						Checkview_Admin_Logs::add( 'ip-logs', sprintf( 'The value for antispam IPs at hostname [%1$s] is not an array.', $host_name ) );
+					);
+
+					if ( ! $has_mail_hostname ) {
+						checkview_add_to_cleantalk( $user_token, 'antispam', 'test-mail.checkview.io', 4, $service_id );
 					}
+				} else {
+					// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Desired production debug logging.
+					error_log( sprintf( 'The value for antispam IPs at hostname [%1$s] is not an array.', $host_name ) );
+					Checkview_Admin_Logs::add( 'ip-logs', sprintf( 'The value for antispam IPs at hostname [%1$s] is not an array.', $host_name ) );
 				}
 			}
 
@@ -791,25 +809,28 @@ if ( ! function_exists( 'checkview_whitelist_api_ip' ) ) {
 
 			if ( is_array( $spamfirewall_ips ) ) {
 				if ( ! isset( $spamfirewall_ips[ $host_name ] ) ) {
+					// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Desired production debug logging.
 					error_log( 'No host name found in Spam Firewall IP list.' );
 
 					// If host name is not set, request to add it.
 					checkview_add_to_cleantalk( $user_token, 'spamfirewall', $current_ip . '/32', 6, $service_id );
-				} else {
-					if ( is_array( $spamfirewall_ips[ $host_name ] ) ) {
-						$has_current_ip = array_find( $spamfirewall_ips[ $host_name ], function( $value, $key ) use ($current_ip) {
+				} elseif ( is_array( $spamfirewall_ips[ $host_name ] ) ) {
+					$has_current_ip = array_find(
+						$spamfirewall_ips[ $host_name ],
+						function ( $value ) use ( $current_ip ) {
 							$position = strpos( $value, $current_ip );
 
-							return $position === false ? false : true;
-						});
-
-						if ( ! $has_current_ip ) {
-							checkview_add_to_cleantalk( $user_token, 'spamfirewall', $current_ip, 6, $service_id );
+							return false !== $position;
 						}
-					} else {
-						error_log( sprintf( 'Value for spam firewall IPs at hostname [%1$s] is unexpected type [%2$s], expected array.', $host_name, gettype( $antispam_ips[ $host_name ] ) ) );
-						Checkview_Admin_Logs::add( 'ip-logs', sprintf( 'Value for spam firewall IPs at hostname [%1$s] is unexpected type [%2$s], expected array.', $host_name, gettype( $antispam_ips[ $host_name ] ) ) );
+					);
+
+					if ( ! $has_current_ip ) {
+						checkview_add_to_cleantalk( $user_token, 'spamfirewall', $current_ip, 6, $service_id );
 					}
+				} else {
+					// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Desired production debug logging.
+					error_log( sprintf( 'Value for spam firewall IPs at hostname [%1$s] is unexpected type [%2$s], expected array.', $host_name, gettype( $spamfirewall_ips[ $host_name ] ) ) );
+					Checkview_Admin_Logs::add( 'ip-logs', sprintf( 'Value for spam firewall IPs at hostname [%1$s] is unexpected type [%2$s], expected array.', $host_name, gettype( $spamfirewall_ips[ $host_name ] ) ) );
 				}
 			}
 		}
@@ -831,13 +852,16 @@ if ( ! function_exists( 'checkview_add_to_cleantalk' ) ) {
 	 * @return mixed
 	 */
 	function checkview_add_to_cleantalk( $user_token, $service_type, $record, $record_type, $service_id ) {
-		error_log( sprintf(
-			'Adding record [%1$s] with type [%2$s] and service type [%3$s] to CleanTalk\'s API with service id [%4$s]',
-			$record,
-			$record_type,
-			$service_type,
-			$service_id,
-		) );
+		// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Desired production debug logging.
+		error_log(
+			sprintf(
+				'Adding record [%1$s] with type [%2$s] and service type [%3$s] to CleanTalk\'s API with service id [%4$s]',
+				$record,
+				$record_type,
+				$service_type,
+				$service_id,
+			)
+		);
 
 		$response = wp_remote_get(
 			'https://api.cleantalk.org/?method_name=private_list_add&user_token=' . $user_token .
@@ -850,9 +874,10 @@ if ( ! function_exists( 'checkview_add_to_cleantalk' ) ) {
 			)
 		);
 
-		delete_transient('checkview_whitelisted_ips_' . $service_type);
+		delete_transient( 'checkview_whitelisted_ips_' . $service_type );
 
 		if ( is_wp_error( $response ) ) {
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Desired production debug logging.
 			error_log( 'Request failed: ' . $response->get_error_message() );
 			return null;
 		}
@@ -907,7 +932,6 @@ if ( ! function_exists( 'checkview_create_cv_session' ) ) {
 	 *
 	 * @return void|boolean
 	 * @since 1.0.0
-	 *
 	 */
 	function checkview_create_cv_session( $ip, $test_id ) {
 		global $wp, $wpdb;
@@ -916,7 +940,6 @@ if ( ! function_exists( 'checkview_create_cv_session' ) ) {
 			return;
 		}
 
-		// Check if already exists (get_cv_session handles its own logging)
 		$already_have = checkview_get_cv_session( $ip, $test_id );
 		if ( ! empty( $already_have ) ) {
 			return;
@@ -976,27 +999,31 @@ if ( ! function_exists( 'checkview_create_cv_session' ) ) {
 			'test_id'    => $test_id,
 		);
 
-		$result = $wpdb->insert( $session_table, $session_data );
-
-		// Log create/fail
+		$result    = $wpdb->insert( $session_table, $session_data );
 		$safe_ip   = preg_replace( '/[^0-9a-fA-F.:,]/', '', substr( $ip, 0, 45 ) );
 		$safe_test = substr( $test_id, 0, 8 );
 
 		if ( false === $result ) {
-			Checkview_Admin_Logs::add( 'ip-logs', sprintf(
-				'Session INSERT FAILED: IP=[%s], test=[%s...], page=[%d], err=[%s].',
-				$safe_ip,
-				$safe_test,
-				(int) $page_id,
-				$wpdb->last_error ? substr( $wpdb->last_error, 0, 80 ) : 'none'
-			) );
+			Checkview_Admin_Logs::add(
+				'ip-logs',
+				sprintf(
+					'Session INSERT FAILED: IP=[%s], test=[%s...], page=[%d], err=[%s].',
+					$safe_ip,
+					$safe_test,
+					(int) $page_id,
+					$wpdb->last_error ? substr( $wpdb->last_error, 0, 80 ) : 'none'
+				)
+			);
 		} else {
-			Checkview_Admin_Logs::add( 'ip-logs', sprintf(
-				'Session CREATED: IP=[%s], test=[%s...], page=[%d].',
-				$safe_ip,
-				$safe_test,
-				(int) $page_id
-			) );
+			Checkview_Admin_Logs::add(
+				'ip-logs',
+				sprintf(
+					'Session CREATED: IP=[%s], test=[%s...], page=[%d].',
+					$safe_ip,
+					$safe_test,
+					(int) $page_id
+				)
+			);
 		}
 	}
 }
@@ -1010,7 +1037,6 @@ if ( ! function_exists( 'checkview_get_cv_session' ) ) {
 	 *
 	 * @return array Array of results from DB.
 	 * @since 1.0.0
-	 *
 	 */
 	function checkview_get_cv_session( $ip, $test_id ) {
 		global $wpdb;
@@ -1020,17 +1046,18 @@ if ( ! function_exists( 'checkview_get_cv_session' ) ) {
 
 		$result = $wpdb->get_results(
 			$wpdb->prepare(
-				"SELECT * FROM {$session_table}
+				'SELECT * FROM %i
 				WHERE visitor_ip = %s
 				AND test_id = %s
-				LIMIT 1",
+				LIMIT 1',
+				$session_table,
 				$ip,
 				$test_id
 			),
 			ARRAY_A
 		);
 
-		// Log once per IP+test combo per request, only for valid UUIDs
+		// Log once per IP+test combo per request, only for valid UUIDs.
 		$log_key = $ip . '|' . $test_id;
 		if ( checkview_is_valid_uuid( $test_id ) && ! isset( $logged_this_request[ $log_key ] ) ) {
 			$logged_this_request[ $log_key ] = true;
@@ -1038,24 +1065,30 @@ if ( ! function_exists( 'checkview_get_cv_session' ) ) {
 			$safe_ip   = preg_replace( '/[^0-9a-fA-F.:,]/', '', substr( $ip, 0, 45 ) );
 			$safe_test = substr( $test_id, 0, 8 );
 			$method    = isset( $_SERVER['REQUEST_METHOD'] )
-				? strtoupper( substr( preg_replace( '/[^A-Za-z]/', '', $_SERVER['REQUEST_METHOD'] ), 0, 7 ) )
+				? strtoupper( substr( preg_replace( '/[^A-Za-z]/', '', sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) ), 0, 7 ) )
 				: '?';
 
 			if ( ! empty( $result ) ) {
-				Checkview_Admin_Logs::add( 'ip-logs', sprintf(
-					'Session FOUND [%s]: IP=[%s], test=[%s...].',
-					$method,
-					$safe_ip,
-					$safe_test
-				) );
+				Checkview_Admin_Logs::add(
+					'ip-logs',
+					sprintf(
+						'Session FOUND [%s]: IP=[%s], test=[%s...].',
+						$method,
+						$safe_ip,
+						$safe_test
+					)
+				);
 			} else {
-				Checkview_Admin_Logs::add( 'ip-logs', sprintf(
-					'Session NOT FOUND [%s]: IP=[%s], test=[%s...]%s.',
-					$method,
-					$safe_ip,
-					$safe_test,
-					$wpdb->last_error ? ', err' : ''
-				) );
+				Checkview_Admin_Logs::add(
+					'ip-logs',
+					sprintf(
+						'Session NOT FOUND [%s]: IP=[%s], test=[%s...]%s.',
+						$method,
+						$safe_ip,
+						$safe_test,
+						$wpdb->last_error ? ', err' : ''
+					)
+				);
 			}
 		}
 
@@ -1109,20 +1142,6 @@ if ( ! function_exists( 'checkview_get_form_page_post_types' ) ) {
 	}
 }
 
-if ( ! function_exists( 'checkview_post_type_placeholders' ) ) {
-	/**
-	 * Builds the `%s, %s, ...` placeholder list for a post type IN clause.
-	 *
-	 * @since 1.0.0
-	 *
-	 * @param string[] $post_types Post type slugs.
-	 * @return string Comma separated placeholders.
-	 */
-	function checkview_post_type_placeholders( $post_types ) {
-		return implode( ', ', array_fill( 0, count( $post_types ), '%s' ) );
-	}
-}
-
 if ( ! function_exists( 'checkview_get_wp_block_pages' ) ) {
 	/**
 	 * Retrieves a list of pages that contain at least one Gutenberg block.
@@ -1138,7 +1157,7 @@ if ( ! function_exists( 'checkview_get_wp_block_pages' ) ) {
 		// WPDBPREPARE.
 		return $wpdb->get_results(
 			$wpdb->prepare(
-				"SELECT * FROM {$wpdb->prefix}posts WHERE 1=1 AND (post_content LIKE %s) AND post_status=%s AND post_type IN ( " . checkview_post_type_placeholders( $post_types ) . ' )',
+				"SELECT * FROM {$wpdb->prefix}posts WHERE 1=1 AND (post_content LIKE %s) AND post_status=%s AND post_type IN ( " . implode( ', ', array_fill( 0, count( $post_types ), '%s' ) ) . ' )',
 				array_merge(
 					array(
 						'%wp:block {\"ref\":' . $block_id . '}%',
@@ -1167,16 +1186,52 @@ if ( ! function_exists( 'checkview_get_elementor_form_widgets' ) ) {
 	 * every page that renders it; see checkview_get_elementor_global_widget_form()
 	 * for which id the resolved node carries.
 	 *
+	 * A whole saved template can also be embedded, with the Template widget
+	 * (`settings.template_id`) or the `[elementor-template id="N"]` shortcode in
+	 * a Shortcode or Text Editor widget. Those are resolved too, keeping each
+	 * form's own id; see checkview_get_elementor_template_forms().
+	 *
 	 * @since 1.0.0
 	 *
 	 * @param array $elements Decoded Elementor element tree (or a subtree).
 	 * @return array List of form-widget element arrays.
 	 */
 	function checkview_get_elementor_form_widgets( $elements ) {
-		$found = array();
+		$scan  = checkview_scan_elementor_elements( $elements );
+		$found = $scan['forms'];
+
+		foreach ( array_unique( $scan['template_ids'] ) as $template_id ) {
+			$found = array_merge( $found, checkview_get_elementor_template_forms( $template_id ) );
+		}
+
+		return $found;
+	}
+}
+
+if ( ! function_exists( 'checkview_scan_elementor_elements' ) ) {
+	/**
+	 * Walks one Elementor element tree without following embedded templates.
+	 *
+	 * Returns the form widgets placed in the tree itself (Global Widgets
+	 * resolved) and the ids of the templates it embeds, so callers decide how
+	 * far to follow them; see checkview_get_elementor_template_forms().
+	 *
+	 * @since 1.0.0
+	 *
+	 * @param array $elements Decoded Elementor element tree (or a subtree).
+	 * @return array {
+	 *     @type array $forms        Form-widget element arrays.
+	 *     @type int[] $template_ids Embedded template ids, possibly repeated.
+	 * }
+	 */
+	function checkview_scan_elementor_elements( $elements ) {
+		$scan = array(
+			'forms'        => array(),
+			'template_ids' => array(),
+		);
 
 		if ( ! is_array( $elements ) ) {
-			return $found;
+			return $scan;
 		}
 
 		foreach ( $elements as $element ) {
@@ -1187,23 +1242,37 @@ if ( ! function_exists( 'checkview_get_elementor_form_widgets' ) ) {
 			$widget_type = isset( $element['widgetType'] ) ? $element['widgetType'] : '';
 
 			if ( 'form' === $widget_type ) {
-				$found[] = $element;
+				$scan['forms'][] = $element;
 			} elseif ( 'global' === $widget_type ) {
 				$global_form = checkview_get_elementor_global_widget_form( $element );
 				if ( null !== $global_form ) {
-					$found[] = $global_form;
+					$scan['forms'][] = $global_form;
 				}
+			} elseif ( 'template' === $widget_type ) {
+				$template_id = isset( $element['settings']['template_id'] ) ? $element['settings']['template_id'] : 0;
+				if ( is_numeric( $template_id ) && (int) $template_id > 0 ) {
+					$scan['template_ids'][] = (int) $template_id;
+				}
+			} elseif ( 'shortcode' === $widget_type || 'text-editor' === $widget_type ) {
+				// The HTML widget is left out on purpose: it does not run shortcodes.
+				$setting = ( 'shortcode' === $widget_type ) ? 'shortcode' : 'editor';
+				$content = isset( $element['settings'][ $setting ] ) ? $element['settings'][ $setting ] : '';
+
+				$scan['template_ids'] = array_merge(
+					$scan['template_ids'],
+					checkview_get_elementor_template_shortcode_ids( $content )
+				);
 			}
 
 			if ( ! empty( $element['elements'] ) && is_array( $element['elements'] ) ) {
-				$found = array_merge(
-					$found,
-					checkview_get_elementor_form_widgets( $element['elements'] )
-				);
+				$child_scan = checkview_scan_elementor_elements( $element['elements'] );
+
+				$scan['forms']        = array_merge( $scan['forms'], $child_scan['forms'] );
+				$scan['template_ids'] = array_merge( $scan['template_ids'], $child_scan['template_ids'] );
 			}
 		}
 
-		return $found;
+		return $scan;
 	}
 }
 
@@ -1251,7 +1320,13 @@ if ( ! function_exists( 'checkview_get_elementor_global_widget_form' ) ) {
 					$data = json_decode( $data, true );
 				}
 
-				$template_widgets = checkview_get_elementor_form_widgets( $data );
+				/*
+				 * Only forms placed in the template itself. A Template widget
+				 * saved as a Global Widget renders its template as a separate
+				 * document whose forms keep their own ids, so re-keying them to
+				 * the host element below would report an id that is not on the page.
+				 */
+				$template_widgets = checkview_scan_elementor_elements( $data )['forms'];
 				if ( ! empty( $template_widgets ) ) {
 					$template_forms[ $template_id ] = $template_widgets[0];
 				}
@@ -1267,6 +1342,116 @@ if ( ! function_exists( 'checkview_get_elementor_global_widget_form' ) ) {
 		$form['templateID'] = $template_id;
 
 		return $form;
+	}
+}
+
+if ( ! function_exists( 'checkview_get_elementor_template_forms' ) ) {
+	/**
+	 * Collects the form widgets a saved Elementor template renders when embedded.
+	 *
+	 * Unlike a Global Widget, a template embedded with the Template widget or
+	 * the `[elementor-template]` shortcode renders as its own document: each
+	 * form keeps its element id, posts the template's id as `post_id`, and has
+	 * the same form id on every page that embeds the template. So the nodes are
+	 * returned unchanged.
+	 *
+	 * Only published templates count; the Template widget renders nothing for
+	 * any other status. Templates nested in templates are followed breadth
+	 * first with a visited set, so a template that embeds itself, directly or
+	 * through a chain, is walked once and the result does not depend on which
+	 * template was asked about first. Each template is decoded once per request.
+	 *
+	 * @since 1.0.0
+	 *
+	 * @param int|string $template_id Elementor library post id.
+	 * @return array List of form-widget element arrays.
+	 */
+	function checkview_get_elementor_template_forms( $template_id ) {
+		static $scans    = array();
+		static $resolved = array();
+
+		$template_id = (int) $template_id;
+		if ( $template_id <= 0 ) {
+			return array();
+		}
+
+		if ( isset( $resolved[ $template_id ] ) ) {
+			return $resolved[ $template_id ];
+		}
+
+		$forms   = array();
+		$queue   = array( $template_id );
+		$visited = array( $template_id => true );
+
+		while ( ! empty( $queue ) ) {
+			$current_id = array_shift( $queue );
+
+			if ( ! isset( $scans[ $current_id ] ) ) {
+				$scans[ $current_id ] = checkview_scan_elementor_elements( array() );
+
+				if ( 'elementor_library' === get_post_type( $current_id ) && 'publish' === get_post_status( $current_id ) ) {
+					$data = get_post_meta( $current_id, '_elementor_data', true );
+					if ( is_string( $data ) && '' !== $data ) {
+						$data = json_decode( $data, true );
+					}
+
+					$scans[ $current_id ] = checkview_scan_elementor_elements( $data );
+				}
+			}
+
+			$forms = array_merge( $forms, $scans[ $current_id ]['forms'] );
+
+			foreach ( $scans[ $current_id ]['template_ids'] as $embedded_id ) {
+				if ( ! isset( $visited[ $embedded_id ] ) ) {
+					$visited[ $embedded_id ] = true;
+					$queue[]                 = $embedded_id;
+				}
+			}
+		}
+
+		$resolved[ $template_id ] = $forms;
+
+		return $forms;
+	}
+}
+
+if ( ! function_exists( 'checkview_get_elementor_template_shortcode_ids' ) ) {
+	/**
+	 * Extracts the template ids of `[elementor-template id="N"]` shortcodes.
+	 *
+	 * @since 1.0.0
+	 *
+	 * @param string $content Text that may contain the shortcode.
+	 * @return int[] Unique template ids.
+	 */
+	function checkview_get_elementor_template_shortcode_ids( $content ) {
+		if ( ! is_string( $content ) || false === strpos( $content, '[elementor-template' ) ) {
+			return array();
+		}
+
+		if ( ! preg_match_all( '/' . get_shortcode_regex( array( 'elementor-template' ) ) . '/', $content, $matches, PREG_SET_ORDER ) ) {
+			return array();
+		}
+
+		$ids = array();
+		foreach ( $matches as $match ) {
+			// `[[elementor-template ...]]` is escaped and renders as literal text.
+			if ( '[' === $match[1] && ']' === $match[6] ) {
+				continue;
+			}
+
+			$atts = shortcode_parse_atts( $match[3] );
+			if ( ! is_array( $atts ) || ! isset( $atts['id'] ) || ! is_numeric( $atts['id'] ) ) {
+				continue;
+			}
+
+			$id = (int) $atts['id'];
+			if ( $id > 0 ) {
+				$ids[] = $id;
+			}
+		}
+
+		return array_values( array_unique( $ids ) );
 	}
 }
 
@@ -1496,22 +1681,29 @@ if ( ! function_exists( 'checkview_delete_tables_data' ) ) {
 
 		Checkview_Admin_Logs::add( 'ip-logs', 'Running scheduled deletion of CheckView rows...' );
 
-		$table_entry = esc_sql( $wpdb->prefix . 'cv_entry' );
-		$table_entry_meta = esc_sql( $wpdb->prefix . 'cv_entry_meta' );
+		$table_entry      = $wpdb->prefix . 'cv_entry';
+		$table_entry_meta = $wpdb->prefix . 'cv_entry_meta';
 
 		// Delete entries older than 1 day from 'cv_entry_meta' table.
 		$wpdb->query(
-			"DELETE FROM $table_entry_meta
-			WHERE entry_id IN (
-				SELECT id FROM $table_entry
-				WHERE date_created < DATE_SUB(NOW(), INTERVAL 1 DAY)
-			)"
+			$wpdb->prepare(
+				'DELETE FROM %i
+				WHERE entry_id IN (
+					SELECT id FROM %i
+					WHERE date_created < DATE_SUB(NOW(), INTERVAL 1 DAY)
+				)',
+				$table_entry_meta,
+				$table_entry
+			)
 		);
 
 		// Delete entries older than 1 day from 'cv_entry' table.
 		$wpdb->query(
-			"DELETE FROM $table_entry
-			WHERE date_created < DATE_SUB(NOW(), INTERVAL 1 DAY)"
+			$wpdb->prepare(
+				'DELETE FROM %i
+				WHERE date_created < DATE_SUB(NOW(), INTERVAL 1 DAY)',
+				$table_entry
+			)
 		);
 
 		Checkview_Admin_Logs::add( 'ip-logs', 'Done.' );
@@ -1695,11 +1887,11 @@ if ( ! function_exists( 'checkview_update_woocommerce_product_status' ) ) {
 	 */
 	function checkview_update_woocommerce_product_status( $product_id, $status ) {
 		// Check if the product ID is valid and status is either 'publish' or 'draft'.
-		$updated = 0;
+		$updated        = 0;
 		$allowed_status = array( 'publish', 'draft' );
 
 		Checkview_Admin_Logs::add( 'api-logs', 'Updating status of test product [' . $product_id . '] to [' . $status . ']...' );
-		if ( get_post_type( $product_id ) === 'product' && in_array( $status, $allowed_status ) ) {
+		if ( get_post_type( $product_id ) === 'product' && in_array( $status, $allowed_status, true ) ) {
 			// Update the post status.
 			$updated = wp_update_post(
 				array(
@@ -1707,7 +1899,7 @@ if ( ! function_exists( 'checkview_update_woocommerce_product_status' ) ) {
 					'post_status' => $status,
 				)
 			);
-			delete_transient('checkview_store_products_transient');
+			delete_transient( 'checkview_store_products_transient' );
 			Checkview_Admin_Logs::add( 'api-logs', 'Updated status of test product and cleared product caches.' );
 		} else {
 			Checkview_Admin_Logs::add( 'api-logs', 'Called [checkview_update_woocommerce_product_status] on invalid post type or with invalid status (accepts ' . implode( ', ', $allowed_status ) . ', got ' . $status . ').' );
@@ -1716,28 +1908,28 @@ if ( ! function_exists( 'checkview_update_woocommerce_product_status' ) ) {
 	}
 }
 
-if (!function_exists('array_find')) {
-    /**
-     * Finds the first element in the array that satisfies the callback condition.
-		 * 
-		 * Essentially polyfills `array_find`, which was introduced in PHP v8.4.0.
-     *
-     * @param array $array The array to search.
-     * @param callable $callback The callback function to test each element.
-     * @return mixed The first matching element, or null if none found.
-     */
-    function array_find(array $array, callable $callback) {
-        foreach ($array as $key => $value) {
-            if ($callback($value, $key)) {
-                return $value;
-            }
-        }
+if ( ! function_exists( 'array_find' ) ) {
+	/**
+	 * Finds the first element in the array that satisfies the callback condition.
+	 *
+	 * Essentially polyfills `array_find`, which was introduced in PHP v8.4.0.
+	 *
+	 * @param array    $array The array to search.
+	 * @param callable $callback The callback function to test each element.
+	 * @return mixed The first matching element, or null if none found.
+	 */
+	function array_find( array $array, callable $callback ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound, Universal.NamingConventions.NoReservedKeywordParameterNames.arrayFound -- PHP parity.
+		foreach ( $array as $key => $value ) {
+			if ( $callback( $value, $key ) ) {
+				return $value;
+			}
+		}
 
-        return null;
-    }
+		return null;
+	}
 }
 
-if ( ! function_exists( 'cv_update_option' ) ) {
+if ( ! function_exists( 'checkview_update_option' ) ) {
 	/**
 	 * Updates an option in WordPress.
 	 *
@@ -1747,29 +1939,29 @@ if ( ! function_exists( 'cv_update_option' ) ) {
 	 * @see update_option()
 	 * @see get_option()
 	 *
-	 * @param $option string Name of the option to update.
-	 * @param $value mixed Option value.
-	 * @param $autoload boolean|null Optional. Whether to load the option when WordPress starts up.
+	 * @param string       $option Name of the option to update.
+	 * @param mixed        $value Option value.
+	 * @param boolean|null $autoload Optional. Whether to load the option when WordPress starts up.
 	 *
 	 * @return boolean True if the value was updated, false otherwise.
 	 */
-	function cv_update_option( $option, $value, $autoload = null ) {
+	function checkview_update_option( $option, $value, $autoload = null ) {
 		$old_option = get_option( $option );
-		$result = update_option( $option, $value, $autoload );
+		$result     = update_option( $option, $value, $autoload );
 
 		if ( $result ) {
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_print_r -- Desired production debug logging.
 			Checkview_Admin_Logs::add( 'ip-logs', 'Updated option [' . $option . '] with value [' . print_r( $value, true ) . '].' );
-		} else {
-			if ($old_option !== false && $old_option !== $value && maybe_serialize( $old_option ) !== maybe_serialize( $value ) ) {
-				Checkview_Admin_Logs::add( 'ip-logs', 'Failed updating option [' . $option . '] with value [' . print_r( $value, true ) . '].' );
-			}
+		} elseif ( false !== $old_option && $old_option !== $value && maybe_serialize( $old_option ) !== maybe_serialize( $value ) ) {
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_print_r -- Desired production debug logging.
+			Checkview_Admin_Logs::add( 'ip-logs', 'Failed updating option [' . $option . '] with value [' . print_r( $value, true ) . '].' );
 		}
 
 		return $result;
 	}
 }
 
-if ( ! function_exists( 'cv_delete_option' ) ) {
+if ( ! function_exists( 'checkview_delete_option' ) ) {
 	/**
 	 * Deletes an option in WordPress.
 	 *
@@ -1779,11 +1971,11 @@ if ( ! function_exists( 'cv_delete_option' ) ) {
 	 * @see delete_option()
 	 * @see get_option()
 	 *
-	 * @param $option string Name of the option to delete.
+	 * @param string $option Name of the option to delete.
 	 *
 	 * @return boolean True if the value was deleted, false otherwise.
 	 */
-	function cv_delete_option( $option ) {
+	function checkview_delete_option( $option ) {
 		$current_option = get_option( $option );
 
 		if ( false !== $current_option ) {
@@ -1893,7 +2085,8 @@ if ( ! function_exists( 'checkview_truncate_meta_key' ) ) {
 			: substr( $key, 0, 255 );
 	}
 }
-if ( ! function_exists( 'cv_should_allow_original_recipients' ) ) {
+
+if ( ! function_exists( 'checkview_should_allow_original_recipients' ) ) {
 	/**
 	 * Determines whether append-mode is active for the current request.
 	 *
@@ -1913,11 +2106,11 @@ if ( ! function_exists( 'cv_should_allow_original_recipients' ) ) {
 	 *
 	 * @return boolean True if append-mode should fire, false otherwise.
 	 */
-	function cv_should_allow_original_recipients() {
+	function checkview_should_allow_original_recipients() {
 		// Keyed by test id so two concurrent tests cannot read each other's
 		// setting. Without a resolvable test id there is nothing to authorise
 		// append-mode against, so fail closed.
-		$cv_test_id = function_exists( 'get_checkview_test_id' ) ? get_checkview_test_id() : '';
+		$cv_test_id = function_exists( 'checkview_get_test_id' ) ? checkview_get_test_id() : '';
 		if ( empty( $cv_test_id ) ) {
 			return false;
 		}
@@ -1934,7 +2127,7 @@ if ( ! function_exists( 'cv_should_allow_original_recipients' ) ) {
 	}
 }
 
-if ( ! function_exists( 'cv_sanitize_crlf' ) ) {
+if ( ! function_exists( 'checkview_sanitize_crlf' ) ) {
 	/**
 	 * Strips CR and LF characters from a string to prevent email header
 	 * injection.
@@ -1953,7 +2146,7 @@ if ( ! function_exists( 'cv_sanitize_crlf' ) ) {
 	 * @param mixed $value Value to sanitize.
 	 * @return mixed Sanitized value (string with CRLF removed, or input as-is).
 	 */
-	function cv_sanitize_crlf( $value ) {
+	function checkview_sanitize_crlf( $value ) {
 		if ( ! is_string( $value ) ) {
 			return $value;
 		}
@@ -1964,25 +2157,25 @@ if ( ! function_exists( 'cv_sanitize_crlf' ) ) {
 	}
 }
 
-if ( ! function_exists( 'cv_recipients_contain_test_email' ) ) {
+if ( ! function_exists( 'checkview_recipients_contain_test_email' ) ) {
 	/**
-	 * Checks whether TEST_EMAIL is already present in a recipient list,
+	 * Checks whether CHECKVIEW_TEST_EMAIL is already present in a recipient list,
 	 * using proper email-address parsing rather than naive substring match.
 	 *
 	 * Splits on commas (or semicolons), extracts the bare email address from
 	 * each entry (handles "Name <addr>" RFC 2822 format and surrounding
-	 * whitespace), and compares case-insensitively against TEST_EMAIL.
+	 * whitespace), and compares case-insensitively against CHECKVIEW_TEST_EMAIL.
 	 *
-	 * Avoids the substring-collision false positive where TEST_EMAIL might
+	 * Avoids the substring-collision false positive where CHECKVIEW_TEST_EMAIL might
 	 * appear within an unrelated address (e.g., `nottest_id@test-mail.checkview.io`
 	 * incorrectly matching `test_id@test-mail.checkview.io`).
 	 *
 	 * @param array|string $recipients Recipients (array of strings, or comma-/semi-separated string).
 	 *
-	 * @return bool True if any entry's email matches TEST_EMAIL, false otherwise.
+	 * @return bool True if any entry's email matches CHECKVIEW_TEST_EMAIL, false otherwise.
 	 */
-	function cv_recipients_contain_test_email( $recipients ) {
-		if ( ! defined( 'TEST_EMAIL' ) ) {
+	function checkview_recipients_contain_test_email( $recipients ) {
+		if ( ! defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
 			return false;
 		}
 
@@ -1992,7 +2185,7 @@ if ( ! function_exists( 'cv_recipients_contain_test_email' ) ) {
 			$entries = preg_split( '/[,;]/', (string) $recipients );
 		}
 
-		$test_email_lower = strtolower( TEST_EMAIL );
+		$test_email_lower = strtolower( CHECKVIEW_TEST_EMAIL );
 
 		foreach ( $entries as $entry ) {
 			if ( ! is_string( $entry ) ) {
@@ -2017,71 +2210,71 @@ if ( ! function_exists( 'cv_recipients_contain_test_email' ) ) {
 	}
 }
 
-if ( ! function_exists( 'cv_append_test_email_string' ) ) {
+if ( ! function_exists( 'checkview_append_test_email_string' ) ) {
 	/**
-	 * Appends TEST_EMAIL to a comma-separated recipient string with dedup.
+	 * Appends CHECKVIEW_TEST_EMAIL to a comma-separated recipient string with dedup.
 	 *
 	 * Matches the existing replace-mode behavior's data shape: returns a string
-	 * of comma-separated addresses. Skips append if TEST_EMAIL is already
+	 * of comma-separated addresses. Skips append if CHECKVIEW_TEST_EMAIL is already
 	 * present (defensive against double-firing filter chains and customer
 	 * misconfiguration).
 	 *
 	 * @param string $recipients Existing comma-separated recipients (may be empty).
 	 *
-	 * @return string Recipients with TEST_EMAIL appended (or unchanged if dedup hit).
+	 * @return string Recipients with CHECKVIEW_TEST_EMAIL appended (or unchanged if dedup hit).
 	 */
-	function cv_append_test_email_string( $recipients ) {
-		if ( ! defined( 'TEST_EMAIL' ) ) {
+	function checkview_append_test_email_string( $recipients ) {
+		if ( ! defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
 			return $recipients;
 		}
 		if ( empty( $recipients ) ) {
-			return TEST_EMAIL;
+			return CHECKVIEW_TEST_EMAIL;
 		}
-		if ( cv_recipients_contain_test_email( $recipients ) ) {
-			return cv_sanitize_crlf( $recipients );
+		if ( checkview_recipients_contain_test_email( $recipients ) ) {
+			return checkview_sanitize_crlf( $recipients );
 		}
 		// Strip CRLF from existing recipient string before concatenation to
 		// prevent header injection if the customer's form data contains
 		// embedded line breaks.
-		$sanitized = cv_sanitize_crlf( $recipients );
-		return rtrim( $sanitized, ", \t" ) . ',' . TEST_EMAIL;
+		$sanitized = checkview_sanitize_crlf( $recipients );
+		return rtrim( $sanitized, ", \t" ) . ',' . CHECKVIEW_TEST_EMAIL;
 	}
 }
 
-if ( ! function_exists( 'cv_append_test_email_array' ) ) {
+if ( ! function_exists( 'checkview_append_test_email_array' ) ) {
 	/**
-	 * Appends TEST_EMAIL to a recipient array with dedup.
+	 * Appends CHECKVIEW_TEST_EMAIL to a recipient array with dedup.
 	 *
 	 * @param mixed $recipients Existing recipients (array or scalar — coerced to array).
 	 *
-	 * @return array Recipients with TEST_EMAIL appended (or unchanged if dedup hit).
+	 * @return array Recipients with CHECKVIEW_TEST_EMAIL appended (or unchanged if dedup hit).
 	 */
-	function cv_append_test_email_array( $recipients ) {
-		if ( ! defined( 'TEST_EMAIL' ) ) {
+	function checkview_append_test_email_array( $recipients ) {
+		if ( ! defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
 			return is_array( $recipients ) ? $recipients : (array) $recipients;
 		}
 		$list = is_array( $recipients ) ? $recipients : (array) $recipients;
 		// Sanitize each entry — if a customer's form data contains embedded
 		// CRLF in a single recipient entry, downstream wp_mail conversion
 		// could inject headers when the array is joined into a comma string.
-		$list = array_map( 'cv_sanitize_crlf', $list );
-		if ( cv_recipients_contain_test_email( $list ) ) {
+		$list = array_map( 'checkview_sanitize_crlf', $list );
+		if ( checkview_recipients_contain_test_email( $list ) ) {
 			return $list;
 		}
-		$list[] = TEST_EMAIL;
+		$list[] = CHECKVIEW_TEST_EMAIL;
 		return $list;
 	}
 }
 
-if ( ! function_exists( 'cv_inject_reply_to_header' ) ) {
+if ( ! function_exists( 'checkview_inject_reply_to_header' ) ) {
 	/**
-	 * Injects `Reply-To: TEST_EMAIL` into a headers structure when append-mode
-	 * is active. Appends to existing Reply-To rather than replacing.
+	 * Injects `Reply-To: CHECKVIEW_TEST_EMAIL` into a headers structure when
+	 * append-mode is active. Appends to existing Reply-To rather than replacing.
 	 *
 	 * Defends against MTA variance: when the customer's mail server splits
-	 * SMTP delivery per RCPT TO, Postmark may not see TEST_EMAIL in the To
-	 * header. Reply-To injection ensures Postmark's webhook payload always
-	 * carries the test_id-bearing address, which the test-runner's regex
+	 * SMTP delivery per RCPT TO, Postmark may not see CHECKVIEW_TEST_EMAIL
+	 * in the To header. Reply-To injection ensures Postmark's webhook payload
+	 * always carries the test_id-bearing address, which the test-runner's regex
 	 * fallback chain extracts.
 	 *
 	 * Handles both array (e.g. WC, Forminator, Fluent Forms) and string
@@ -2091,11 +2284,11 @@ if ( ! function_exists( 'cv_inject_reply_to_header' ) ) {
 	 *
 	 * @return mixed Headers with Reply-To injected, in the same shape as input.
 	 */
-	function cv_inject_reply_to_header( $headers ) {
-		if ( ! cv_should_allow_original_recipients() ) {
+	function checkview_inject_reply_to_header( $headers ) {
+		if ( ! checkview_should_allow_original_recipients() ) {
 			return $headers;
 		}
-		if ( ! defined( 'TEST_EMAIL' ) ) {
+		if ( ! defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
 			return $headers;
 		}
 
@@ -2123,18 +2316,18 @@ if ( ! function_exists( 'cv_inject_reply_to_header' ) ) {
 			}
 		}
 
-		$test_email_lower = strtolower( TEST_EMAIL );
+		$test_email_lower = strtolower( CHECKVIEW_TEST_EMAIL );
 
 		if ( null === $existing_index ) {
-			$list[] = 'Reply-To: ' . TEST_EMAIL;
+			$list[] = 'Reply-To: ' . CHECKVIEW_TEST_EMAIL;
 		} else {
 			$existing = $list[ $existing_index ];
 
 			// Sanitize CRLF unconditionally — neutralize any header injection
 			// in the existing value before we touch it, regardless of whether
 			// dedup hits or we append. Consistent with the other helpers
-			// (cv_append_test_email_string/array always sanitize).
-			$sanitized = cv_sanitize_crlf( $existing );
+			// (checkview_append_test_email_string/array always sanitize).
+			$sanitized               = checkview_sanitize_crlf( $existing );
 			$list[ $existing_index ] = $sanitized;
 
 			// Extract addresses already in this Reply-To and check via the
@@ -2146,9 +2339,9 @@ if ( ! function_exists( 'cv_inject_reply_to_header' ) ) {
 				// unconditionally when the form maps no reply-to field, and
 				// appending to it would yield a malformed `Reply-To:, addr`.
 				// Replace the whole header rather than append to nothing.
-				$list[ $existing_index ] = 'Reply-To: ' . TEST_EMAIL;
-			} elseif ( ! cv_recipients_contain_test_email( $value ) ) {
-				$list[ $existing_index ] = rtrim( $sanitized, ", \t" ) . ', ' . TEST_EMAIL;
+				$list[ $existing_index ] = 'Reply-To: ' . CHECKVIEW_TEST_EMAIL;
+			} elseif ( ! checkview_recipients_contain_test_email( $value ) ) {
+				$list[ $existing_index ] = rtrim( $sanitized, ", \t" ) . ', ' . CHECKVIEW_TEST_EMAIL;
 			}
 		}
 

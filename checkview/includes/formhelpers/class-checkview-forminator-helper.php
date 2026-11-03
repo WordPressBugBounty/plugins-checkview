@@ -70,7 +70,7 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 		public function __construct() {
 			$this->loader = new Checkview_Loader();
 
-			if ( defined( 'TEST_EMAIL' ) ) {
+			if ( defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
 				// update email to our test email.
 				add_filter(
 					'forminator_form_get_admin_email_recipients',
@@ -261,6 +261,7 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 			// allowlist call that early-returns without a configured service id
 			// and API key. This sentinel is local and unconditional.
 			global $cleantalk_executed;
+			// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Cleantalk defines this variable.
 			$cleantalk_executed = true;
 
 			// Disable form actions.
@@ -304,22 +305,22 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 		 */
 		public function checkview_inject_email( $email ) {
 			// New: append-mode branch — deliver to BOTH real recipient and test inbox.
-			if ( cv_should_allow_original_recipients() ) {
+			if ( checkview_should_allow_original_recipients() ) {
 				$email = is_array( $email )
-					? cv_append_test_email_array( $email )
-					: cv_append_test_email_string( $email );
+					? checkview_append_test_email_array( $email )
+					: checkview_append_test_email_string( $email );
 				Checkview_Admin_Logs::add( 'ip-logs', 'Append-mode submission recipient email address: ' . wp_json_encode( $email ) );
 				return $email;
 			}
 
-			$cv_test_id = get_checkview_test_id();
-			if ( ! $cv_test_id || 'true' != get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
+			$cv_test_id = checkview_get_test_id();
+			if ( ! $cv_test_id || 'true' !== get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
 				$email   = array();
-				$email[] = TEST_EMAIL;
+				$email[] = CHECKVIEW_TEST_EMAIL;
 			} elseif ( is_array( $email ) ) {
-				$email[] = TEST_EMAIL;
+				$email[] = CHECKVIEW_TEST_EMAIL;
 			} else {
-				$email .= ', ' . TEST_EMAIL;
+				$email .= ', ' . CHECKVIEW_TEST_EMAIL;
 			}
 
 			Checkview_Admin_Logs::add( 'ip-logs', 'Submission recipient email address: ' . wp_json_encode( $email ) );
@@ -334,8 +335,8 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 		public function checkview_remove_email_header( array $headers ): array {
 			// Append-mode: preserve original CC/BCC so customer's full recipient
 			// list receives the email. Inject Reply-To for MTA-variance defense.
-			if ( cv_should_allow_original_recipients() ) {
-				$headers = cv_inject_reply_to_header( $headers );
+			if ( checkview_should_allow_original_recipients() ) {
+				$headers = checkview_inject_reply_to_header( $headers );
 				Checkview_Admin_Logs::add( 'ip-logs', 'Append-mode submission email headers (CC/BCC preserved): ' . wp_json_encode( $headers ) );
 				return $headers;
 			}
@@ -382,7 +383,7 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 		 *                            hook reads the persisted entry instead).
 		 * @return void
 		 */
-		public function checkview_capture_entry_id( $entry, $form_id, $form_fields = array() ) {
+		public function checkview_capture_entry_id( $entry, $form_id, $form_fields = array() ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 			// Reaching this hook at all means validation passed and the entry was
 			// persisted — see checkview_log_unfinished_submission().
 			$this->submission_reached_save = true;
@@ -446,7 +447,7 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 		 * @param array $response Submission response (the id is NOT in here — see below).
 		 * @return void
 		 */
-		public function checkview_log_form_test_entry( $form_id, $response = array() ) {
+		public function checkview_log_form_test_entry( $form_id, $response = array() ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 			$form_id = (int) $form_id;
 
 			// DO NOT read the entry id from $response.
@@ -458,7 +459,7 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 			// absent, so reading it yielded 0 — and this handler then took the
 			// "nothing was stored" branch, cloned nothing, never deleted the test
 			// entry, and completed the test green with no field data.
-			$entry_id = (int) $this->pending_entry_id;
+			$entry_id               = (int) $this->pending_entry_id;
 			$this->pending_entry_id = 0;
 			$this->handler_ran      = true;
 
@@ -478,7 +479,7 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 			// completed — otherwise it hangs to timeout.
 			if ( $entry_id <= 0 ) {
 				Checkview_Admin_Logs::add( 'ip-logs', 'Forminator form [' . $form_id . '] stored no entry (submission storage disabled or leads form); completing the test without cloning.' );
-				complete_checkview_test( get_checkview_test_id() );
+				checkview_complete_test( checkview_get_test_id() );
 				return;
 			}
 
@@ -536,7 +537,7 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 				return;
 			}
 
-			$checkview_test_id = get_checkview_test_id();
+			$checkview_test_id = checkview_get_test_id();
 
 			Checkview_Admin_Logs::add( 'ip-logs', 'Cloning submission entry [' . $entry_id . ']...' );
 
@@ -556,7 +557,7 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 			);
 
 			$entry_table = $wpdb->prefix . 'cv_entry';
-			$result = $wpdb->insert( $entry_table, $entry_data );
+			$result      = $wpdb->insert( $entry_table, $entry_data );
 
 			if ( ! $result ) {
 				Checkview_Admin_Logs::add( 'ip-logs', 'Failed to clone submission entry data. wpdb->last_error=[' . $wpdb->last_error . ']' );
@@ -566,7 +567,7 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 
 			// Skip meta loop when parent insert failed: $wpdb->insert_id
 			// is 0, meta rows would be orphaned with entry_id=0.
-			// complete_checkview_test() and Forminator entry delete below still run.
+			// checkview_complete_test() and Forminator entry delete below still run.
 			if ( $result ) {
 				$entry_meta_table = $wpdb->prefix . 'cv_entry_meta';
 				$count            = 0;
@@ -653,8 +654,10 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 						'uid'        => $checkview_test_id,
 						'form_id'    => $form_id,
 						'entry_id'   => $entry_id,
+						// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
 						'meta_key'   => checkview_truncate_meta_key( $meta_key ),
 						'meta_value' => $field_value,
+						// phpcs:enable WordPress.DB.SlowDBQuery
 					);
 
 					if ( $wpdb->insert( $entry_meta_table, $entry_metadata ) ) {
@@ -697,8 +700,10 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 									'uid'        => $checkview_test_id,
 									'form_id'    => $form_id,
 									'entry_id'   => $entry_id,
+									// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
 									'meta_key'   => checkview_truncate_meta_key( $meta_key . '-' . $subfield ),
 									'meta_value' => (string) $leaf,
+									// phpcs:enable WordPress.DB.SlowDBQuery
 								)
 							);
 							if ( $inserted ) {
@@ -722,7 +727,7 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 			// re-inserts rows against a deleted entry.
 			Forminator_Form_Entry_Model::delete_by_entry( $entry_id );
 
-			complete_checkview_test( $checkview_test_id );
+			checkview_complete_test( $checkview_test_id );
 		}
 
 		/**
@@ -748,7 +753,7 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 		 * @param array $fields Array of fields.
 		 * @param array $form_id Form id.
 		 */
-		public function remove_recaptcha_field_from_list( $fields, $form_id ) {
+		public function remove_recaptcha_field_from_list( $fields, $form_id ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 
 			// Iterate and remove captcha fields.
 			// Iterate through the form data.
@@ -756,7 +761,7 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 				if ( isset( $wrapper['fields'] ) && is_array( $wrapper['fields'] ) ) {
 					foreach ( $wrapper['fields'] as $field_key => $field ) {
 						// Check if the field type is 'captcha'.
-						if ( isset( $field['type'] ) && $field['type'] === 'captcha' ) {
+						if ( isset( $field['type'] ) && 'captcha' === $field['type'] ) {
 							unset( $wrapper['fields'][ $field_key ] ); // Remove the captcha field.
 						}
 					}
@@ -780,8 +785,8 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 		 * @param bool $enabled   enabled default trigger.
 		 */
 		public function checkview_disable_form_actions( $enabled ) {
-			$cv_test_id = get_checkview_test_id();
-			if ( $cv_test_id && 'true' == get_option( 'disable_actions_' . $cv_test_id, false ) ) {
+			$cv_test_id = checkview_get_test_id();
+			if ( $cv_test_id && 'true' === get_option( 'disable_actions_' . $cv_test_id, false ) ) {
 				return false;
 			}
 			return $enabled;
@@ -791,8 +796,8 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 		 * Hooks every registered add-on's form settings so feeds can be hidden
 		 * from the submit path during a test.
 		 *
-		 * attach_addons_on_form_submit() (front-action.php) resolves connected
-		 * add-ons from each form's settings meta through
+		 * Forminator's attach_addons_on_form_submit() (front-action.php)
+		 * resolves connected add-ons from each form's settings meta through
 		 * Forminator_Integration_Settings::get_settings_values(), which applies
 		 * `forminator_addon_{slug}_get_form_settings_values`. An empty array
 		 * there reads as "not connected", so Mailchimp, webhooks and the rest
@@ -821,7 +826,7 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 		 * Returns no feed settings while a test with disable_actions or
 		 * disable_webhooks runs.
 		 *
-		 * Either flag suppresses, matching cv_is_suppressible_test_order(): the
+		 * Either flag suppresses, matching checkview_is_suppressible_test_order(): the
 		 * SaaS sends both query params from one toggle. The
 		 * cv_suppression_kill_switch option turns this off along with every
 		 * other suppression gate.
@@ -830,11 +835,11 @@ if ( ! class_exists( 'Checkview_Forminator_Helper' ) ) {
 		 * @param int   $module_id Form id.
 		 * @return array
 		 */
-		public function checkview_empty_addon_feed( $values, $module_id ) {
+		public function checkview_empty_addon_feed( $values, $module_id ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 			if ( get_option( 'cv_suppression_kill_switch' ) === 'true' ) {
 				return $values;
 			}
-			$cv_test_id = get_checkview_test_id();
+			$cv_test_id = checkview_get_test_id();
 			if ( ! $cv_test_id ) {
 				return $values;
 			}

@@ -11,7 +11,7 @@
  * Plugin Name:       CheckView
  * Plugin URI:        https://checkview.io
  * Description:       CheckView is the #1 fully automated solution to test your WordPress forms and detect form problems fast.  Automatically test your WordPress forms to ensure you never miss a lead again.
- * Version:           2.5.1
+ * Version:           2.6.0
  * Author:            CheckView
  * Author URI:        https://checkview.io/
  * License:           GPL-2.0+
@@ -34,7 +34,7 @@ if ( ! defined( 'WPINC' ) ) {
  *
  * @link https://semver.org
  */
-define( 'CHECKVIEW_VERSION', '2.5.1' );
+define( 'CHECKVIEW_VERSION', '2.6.0' );
 
 if ( ! defined( 'CHECKVIEW_BASE_DIR' ) ) {
 	define( 'CHECKVIEW_BASE_DIR', plugin_basename( __FILE__ ) );
@@ -77,6 +77,8 @@ if ( ! defined( 'CHECKVIEW_URI' ) ) {
  *
  * @since 2.3.0
  *
+ * @param string $reason Cache invalidation reasoning.
+ *
  * @return void
  */
 function checkview_invalidate_opcache( $reason = '' ) {
@@ -97,13 +99,14 @@ function checkview_invalidate_opcache( $reason = '' ) {
 		}
 	}
 
-	error_log( sprintf( '[CheckView] OPcache invalidated %d PHP files in %s (reason: %s)', $count, $dir, $reason ?: 'unspecified' ) );
+	// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Desired production debug logging.
+	error_log( sprintf( '[CheckView] OPcache invalidated %d PHP files in %s (reason: %s)', $count, $dir, $reason ? $reason : 'unspecified' ) );
 }
 
 /**
  * Handles CheckView activation.
  */
-function activate_checkview() {
+function checkview_activate() {
 	// checkview-functions.php is normally loaded on plugins_loaded, which
 	// hasn't fired yet during activation. Pull it in so the activator can
 	// call checkview_dbdelta_or_query().
@@ -112,16 +115,16 @@ function activate_checkview() {
 	Checkview_Activator::activate();
 	checkview_invalidate_opcache( 'plugin activation' );
 }
-register_activation_hook( __FILE__, 'activate_checkview' );
+register_activation_hook( __FILE__, 'checkview_activate' );
 
 /**
  * Handles CheckView deactivation.
  */
-function deactivate_checkview() {
+function checkview_deactivate() {
 	require_once plugin_dir_path( __FILE__ ) . 'includes/class-checkview-deactivator.php';
 	Checkview_Deactivator::deactivate();
 }
-register_deactivation_hook( __FILE__, 'deactivate_checkview' );
+register_deactivation_hook( __FILE__, 'checkview_deactivate' );
 
 if ( ! function_exists( 'is_plugin_active' ) ) {
 	require_once ABSPATH . 'wp-admin/includes/plugin.php';
@@ -140,7 +143,7 @@ require plugin_dir_path( __FILE__ ) . 'includes/class-checkview.php';
  * `cv_suppression_kill_switch` to `'true'` via WP-CLI to bypass all
  * webhook/action suppression on a customer site, even on stamped test
  * orders. The option is read on every webhook delivery
- * (`cv_is_suppressible_test_order`), so we want it autoloaded for cache-hit
+ * (`checkview_is_suppressible_test_order`), so we want it autoloaded for cache-hit
  * reads instead of a DB query per webhook.
  *
  * Registers on `init` (priority 1) instead of `register_activation_hook`
@@ -161,11 +164,11 @@ add_action( 'init', 'checkview_seed_kill_switch', 1 );
  *
  * @since 1.0.0
  */
-function run_checkview() {
+function checkview_run() {
 	$plugin = CheckView::get_instance();
 	$plugin->run();
 }
-add_action( 'plugins_loaded', 'run_checkview', 10 );
+add_action( 'plugins_loaded', 'checkview_run', 10 );
 
 /**
  * Invalidate OPcache when the plugin version changes.
@@ -177,8 +180,8 @@ add_action( 'plugins_loaded', 'run_checkview', 10 );
  */
 function checkview_maybe_invalidate_opcache() {
 	$stored = get_option( 'checkview_version' );
-	if ( $stored !== CHECKVIEW_VERSION ) {
-		checkview_invalidate_opcache( sprintf( 'version change %s -> %s', $stored ?: 'none', CHECKVIEW_VERSION ) );
+	if ( CHECKVIEW_VERSION !== $stored ) {
+		checkview_invalidate_opcache( sprintf( 'version change %s -> %s', $stored ? $stored : 'none', CHECKVIEW_VERSION ) );
 		update_option( 'checkview_version', CHECKVIEW_VERSION );
 	}
 }

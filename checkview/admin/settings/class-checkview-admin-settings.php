@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 class Checkview_Admin_Settings {
 	/**
 	 * The current tab.
-	 * 
+	 *
 	 * The CheckView settings page has tabs, where each tab contains its relevant settings.
 	 *
 	 * @var string
@@ -31,7 +31,7 @@ class Checkview_Admin_Settings {
 	 *
 	 * @since 1.0.0
 	 * @access protected
-	 * 
+	 *
 	 * @var string $plugin_name The string used to uniquely identify this plugin.
 	 */
 	protected $plugin_name;
@@ -41,33 +41,34 @@ class Checkview_Admin_Settings {
 	 *
 	 * @since 1.0.0
 	 * @access protected
-	 * 
+	 *
 	 * @var string $version The current version of the plugin.
 	 */
 	protected $version;
 	/**
 	 * Constructor.
-	 * 
+	 *
 	 * Sets class properties.
 	 *
 	 * @since 1.0.0
-	 * 
+	 *
 	 * @param string $plugin_name Name of the plugin.
 	 * @param string $version Version number of the plugin.
 	 */
 	public function __construct( $plugin_name, $version ) {
 		$this->plugin_name = $plugin_name;
 		$this->version     = $version;
-		$this->page_tab    = isset( $_GET['tab'] ) ? sanitize_text_field( wp_unslash( $_GET['tab'] ) ) : 'general';
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only admin tab routing.
+		$this->page_tab = isset( $_GET['tab'] ) ? sanitize_text_field( wp_unslash( $_GET['tab'] ) ) : 'general';
 	}
 
 	/**
 	 * Displays admin notices.
-	 * 
+	 *
 	 * Displays a success notice when a user updates settings within the admin area.
 	 *
 	 * @since 1.0.0
-	 * 
+	 *
 	 * @return void
 	 */
 	public function checkview_admin_notices() {
@@ -101,7 +102,7 @@ class Checkview_Admin_Settings {
 	 * Saves settings to the database.
 	 *
 	 * @since 1.0.0
-	 * 
+	 *
 	 * @return void
 	 */
 	public function checkview_admin_advance_settings_save() {
@@ -192,7 +193,7 @@ class Checkview_Admin_Settings {
 	 */
 	public function checkview_menu() {
 		$hide_me = get_option( 'checkview_hide_me', false );
-		if ( 'true' == $hide_me ) {
+		if ( 'true' === $hide_me ) {
 			$title = esc_html__( 'Automated Testing', 'checkview' );
 		} else {
 			$title = esc_html__( 'CheckView', 'checkview' );
@@ -236,7 +237,6 @@ class Checkview_Admin_Settings {
 					<?php
 					foreach ( $checkview_sections as $key => $checkview_section ) {
 						if ( $this->page_tab === $key ) {
-
 							$url = 'templates/' . $key . '.php';
 							apply_filters( 'checkview_template_url', $url );
 							include $url;
@@ -291,13 +291,14 @@ class Checkview_Admin_Settings {
 	 * Adds Inspry mention in the admin footer text.
 	 *
 	 * @since 1.0.0
-	 * 
+	 *
 	 * @param string $footer_text Footer text.
 	 * @return mixed
 	 */
 	public function checkview_add_footer_admin( $footer_text ) {
 		// Routing check only (which admin page is showing); nothing is
 		// processed from the value, so no nonce applies.
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only admin tab routing.
 		$page = isset( $_GET['page'] ) ? sanitize_key( wp_unslash( $_GET['page'] ) ) : '';
 		if ( 'checkview-options' !== $page ) {
 			return $footer_text;

@@ -147,7 +147,8 @@ class Checkview_Admin {
 		// Delete nonces older than the expiration time.
 		$wpdb->query(
 			$wpdb->prepare(
-				"DELETE FROM $table_name WHERE used_at < %s",
+				'DELETE FROM %i WHERE used_at < %s',
+				$table_name,
 				$expiration
 			)
 		);
@@ -228,7 +229,9 @@ class Checkview_Admin {
 			$this->version,
 			true
 		);
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only admin tab routing.
 		if ( isset( $_GET['tab'] ) ) {
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only admin tab routing.
 			$tab = sanitize_text_field( wp_unslash( $_GET['tab'] ) );
 		} else {
 			$tab = '';
@@ -328,8 +331,9 @@ class Checkview_Admin {
 			return $result;
 		}
 
-		// Disable caching layers for this specific request
+		// Disable caching layers for this specific request.
 
+		// phpcs:disable WordPress.NamingConventions.PrefixAllGlobals -- WordPress constants
 		if ( ! defined( 'DONOTCACHEPAGE' ) ) {
 			define( 'DONOTCACHEPAGE', true );
 		}
@@ -341,9 +345,9 @@ class Checkview_Admin {
 		if ( ! defined( 'DONOTCACHEDB' ) ) {
 			define( 'DONOTCACHEDB', true );
 		}
+		// phpcs:enable
 
-		// Ignore Redis/Memcached
-
+		// Ignore Redis/Memcached.
 		if ( function_exists( 'wp_using_ext_object_cache' ) ) {
 			wp_using_ext_object_cache( false );
 		}
@@ -387,8 +391,8 @@ class Checkview_Admin {
 	 * sub-request of a batch, which carry routes of their own.
 	 *
 	 * @param WP_REST_Response|mixed $response The REST API response object.
-	 * @param WP_REST_Server|null $server Unused. The server instance.
-	 * @param WP_REST_Request|null $request The request that was dispatched.
+	 * @param WP_REST_Server|null    $server Unused. The server instance.
+	 * @param WP_REST_Request|null   $request The request that was dispatched.
 	 *
 	 * @return WP_REST_Response|mixed The response object with modified headers.
 	 *
@@ -429,7 +433,7 @@ class Checkview_Admin {
 			return;
 		}
 
-		$cv_test_id = get_checkview_test_id();
+		$cv_test_id = checkview_get_test_id();
 		if ( empty( $cv_test_id ) ) {
 			Checkview_Admin_Logs::add( 'ip-logs', 'Reached test init but could not get test ID.' );
 			return;
@@ -456,8 +460,8 @@ class Checkview_Admin {
 				$allowlist = $visitor_ip;
 			}
 
-			$ips = sanitize_textarea_field( wp_unslash( $allowlist ) );
-			$ips = AIOWPSecurity_Utility_IP::create_ip_list_array_from_string_with_newline( $ips );
+			$ips                     = sanitize_textarea_field( wp_unslash( $allowlist ) );
+			$ips                     = AIOWPSecurity_Utility_IP::create_ip_list_array_from_string_with_newline( $ips );
 			$validated_ip_list_array = AIOWPSecurity_Utility_IP::validate_ip_list( $ips, 'firewall_allowlist' );
 
 			if ( is_wp_error( $validated_ip_list_array ) ) {
@@ -471,30 +475,30 @@ class Checkview_Admin {
 		}
 
 		if ( is_plugin_active( 'defender-security/wp-defender.php' ) ) {
-			$data = array();
-			$data['allow_list'] = (array) $visitor_ip;
-			$data['block_list'] = array();
-			$data['last_update_time'] = '';
+			$data                         = array();
+			$data['allow_list']           = (array) $visitor_ip;
+			$data['block_list']           = array();
+			$data['last_update_time']     = '';
 			$data['last_update_time_utc'] = '';
 
 			$global_ip_component = wd_di()->get( Global_IP::class );
-			$result = $global_ip_component->set_global_ip_list( $data );
+			$result              = $global_ip_component->set_global_ip_list( $data );
 		}
 
 		if ( is_plugin_active( 'enhanced-cloudflare-turnstile/enhanced-cloudflare-turnstile.php' ) ) {
-			$ect_ip_address = ecft_get_option( 'ecft_ip_address' );
+			$ect_ip_address       = ecft_get_option( 'ecft_ip_address' );
 			$ect_ip_address_array = explode( "\n", $ect_ip_address );
 
 			if ( ! empty( $ect_ip_address_array ) && is_array( $ect_ip_address_array ) ) {
-				if ( ! in_array( $visitor_ip, $ect_ip_address_array ) ) {
+				if ( ! in_array( $visitor_ip, $ect_ip_address_array, true ) ) {
 					$ect_ip_address .= "\n" . $visitor_ip;
 
-					cv_update_option( 'ecft_ip_address', $ect_ip_address );
+					checkview_update_option( 'ecft_ip_address', $ect_ip_address );
 				}
 			} else {
 				$ect_ip_address = $visitor_ip;
 
-				cv_update_option( 'ecft_ip_address', $ect_ip_address );
+				checkview_update_option( 'ecft_ip_address', $ect_ip_address );
 			}
 		}
 
@@ -506,19 +510,19 @@ class Checkview_Admin {
 			$captcha_ip_range = array_filter( explode( ',', $captcha_ip_range_opt ) );
 
 			// Check if the IP is already in the list.
-			if ( ! in_array( $visitor_ip, $captcha_ip_range ) ) {
+			if ( ! in_array( $visitor_ip, $captcha_ip_range, true ) ) {
 				// Add new IP to the list.
 				$captcha_ip_range[] = $visitor_ip;
 
 				// Save the updated list back to the database.
-				cv_update_option( 'captcha_ip_range_opt', implode( ',', $captcha_ip_range ) );
+				checkview_update_option( 'captcha_ip_range_opt', implode( ',', $captcha_ip_range ) );
 			}
 		}
 
 		if ( is_plugin_active( 'recaptcha-for-woocommerce/woo-recaptcha.php' ) ) {
-			$captcha_ip_range = '';
+			$captcha_ip_range     = '';
 			$captcha_ip_range_opt = '';
-			$captcha_ip_range = array();
+			$captcha_ip_range     = array();
 
 			// Get the existing whitelist from the database.
 			$captcha_ip_range_opt = sanitize_text_field( wp_unslash( get_option( 'i13_recapcha_ip_to_skip_captcha' ) ) );
@@ -527,26 +531,28 @@ class Checkview_Admin {
 			$captcha_ip_range = array_filter( explode( ',', $captcha_ip_range_opt ) );
 
 			// Check if the IP is already in the list.
-			if ( ! in_array( $visitor_ip, $captcha_ip_range ) ) {
+			if ( ! in_array( $visitor_ip, $captcha_ip_range, true ) ) {
 				// Add new IP to the list.
 				$captcha_ip_range[] = $visitor_ip;
 				if ( count( $captcha_ip_range ) > 1 ) {
 					// Save the updated list back to the database.
-					cv_update_option( 'i13_recapcha_ip_to_skip_captcha', implode( ',', $captcha_ip_range ) );
+					checkview_update_option( 'i13_recapcha_ip_to_skip_captcha', implode( ',', $captcha_ip_range ) );
 				} else {
-					cv_update_option( 'i13_recapcha_ip_to_skip_captcha',  $visitor_ip );
+					checkview_update_option( 'i13_recapcha_ip_to_skip_captcha', $visitor_ip );
 				}
 			}
 		}
 
-		$disable_email_receipt = isset( $_REQUEST['disable_email_receipt'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['disable_email_receipt'] ) ) : false;
-		$disable_webhooks = isset( $_REQUEST['disable_webhooks'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['disable_webhooks'] ) ) : false;
-		$disable_actions = isset( $_REQUEST['disable_actions'] )
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended -- Read-only CheckView test options from SaaS request; no nonce possible.
+		$disable_email_receipt     = isset( $_REQUEST['disable_email_receipt'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['disable_email_receipt'] ) ) : false;
+		$disable_webhooks          = isset( $_REQUEST['disable_webhooks'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['disable_webhooks'] ) ) : false;
+		$disable_actions           = isset( $_REQUEST['disable_actions'] )
 			? sanitize_text_field( wp_unslash( $_REQUEST['disable_actions'] ) )
 			: '';
 		$allow_original_recipients = isset( $_REQUEST['allow_original_recipients'] )
 			? sanitize_text_field( wp_unslash( $_REQUEST['allow_original_recipients'] ) )
 			: '';
+		// phpcs:enable WordPress.Security.NonceVerification.Recommended
 		$referrer_url = sanitize_url( wp_get_raw_referer(), array( 'http', 'https' ) );
 
 		// If not Ajax submission and found test_id.
@@ -554,7 +560,7 @@ class Checkview_Admin {
 			// Create session for later use when form submit VIA AJAX.
 			checkview_create_cv_session( $visitor_ip, $cv_test_id );
 
-			cv_update_option( $visitor_ip, 'checkview-saas', true);
+			checkview_update_option( $visitor_ip, 'checkview-saas', true );
 		}
 
 		if ( ! empty( $cv_test_id ) && ! checkview_is_valid_uuid( $cv_test_id ) ) {
@@ -588,7 +594,7 @@ class Checkview_Admin {
 		if ( ! empty( $cv_test_id ) ) {
 			$send_to = $cv_test_id . '@test-mail.checkview.io';
 		} else {
-			$cv_test_id = get_checkview_test_id();
+			$cv_test_id = checkview_get_test_id();
 			if ( ! empty( $cv_test_id ) ) {
 				$send_to = $cv_test_id . '@test-mail.checkview.io';
 			} else {
@@ -597,7 +603,7 @@ class Checkview_Admin {
 		}
 
 		if ( ! empty( $cv_session ) ) {
-			$test_key = $cv_session[0]['test_key'];
+			$test_key  = $cv_session[0]['test_key'];
 			$test_form = get_option( $test_key, '' );
 
 			if ( ! empty( $test_form ) ) {
@@ -608,27 +614,27 @@ class Checkview_Admin {
 				$send_to = $test_form['send_to'];
 			}
 
-			if ( ! defined( 'CV_TEST_ID' ) ) {
-				define( 'CV_TEST_ID', $cv_test_id );
+			if ( ! defined( 'CHECKVIEW_TEST_ID' ) ) {
+				define( 'CHECKVIEW_TEST_ID', $cv_test_id );
 
-				Checkview_Admin_Logs::add( 'ip-logs', 'Defined constant [CV_TEST_ID] as [ ' . CV_TEST_ID . ' ].' );
+				Checkview_Admin_Logs::add( 'ip-logs', 'Defined constant [CHECKVIEW_TEST_ID] as [ ' . CHECKVIEW_TEST_ID . ' ].' );
 			}
 		} else {
 			Checkview_Admin_Logs::add( 'ip-logs', 'The CheckView session was empty, but continuing.' );
 		}
 
-		if ( ! defined( 'TEST_EMAIL' ) ) {
-			define( 'TEST_EMAIL', $send_to );
+		if ( ! defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
+			define( 'CHECKVIEW_TEST_EMAIL', $send_to );
 
-			Checkview_Admin_Logs::add( 'ip-logs', 'Defined constant [TEST_EMAIL] as [ ' . TEST_EMAIL . ' ].' );
+			Checkview_Admin_Logs::add( 'ip-logs', 'Defined constant [CHECKVIEW_TEST_EMAIL] as [ ' . CHECKVIEW_TEST_EMAIL . ' ].' );
 		}
 
-		if ( ! defined( 'CV_DISABLE_EMAIL_RECEIPT' ) && $disable_email_receipt ) {
-			define( 'CV_DISABLE_EMAIL_RECEIPT', 'true' );
+		if ( ! defined( 'CHECKVIEW_DISABLE_EMAIL_RECEIPT' ) && $disable_email_receipt ) {
+			define( 'CHECKVIEW_DISABLE_EMAIL_RECEIPT', 'true' );
 
-			Checkview_Admin_Logs::add( 'ip-logs', 'Defined constant [CV_DISABLE_EMAIL_RECEIPT] as [' . CV_DISABLE_EMAIL_RECEIPT . '].' );
+			Checkview_Admin_Logs::add( 'ip-logs', 'Defined constant [CHECKVIEW_DISABLE_EMAIL_RECEIPT] as [' . CHECKVIEW_DISABLE_EMAIL_RECEIPT . '].' );
 
-			cv_update_option( 'disable_email_receipt_' . $cv_test_id, 'true', false );
+			checkview_update_option( 'disable_email_receipt_' . $cv_test_id, 'true', false );
 		}
 
 		// DURABILITY CONTRACT: the disable_webhooks_<uuid> and
@@ -637,34 +643,34 @@ class Checkview_Admin {
 		// request that carries `?disable_actions=true` / `?disable_webhooks=true`
 		// from the SaaS, and MUST NOT be cleared mid-test on subsequent AJAX
 		// requests that lack the param — downstream gates
-		// (`cv_is_suppressible_test_order`, `checkview_filter_webhooks`,
+		// (`checkview_is_suppressible_test_order`, `checkview_filter_webhooks`,
 		// `checkview_mailchimp_killswitch`) read these options when the
 		// webhook/action fires, which can be many requests later. Only
-		// `complete_checkview_test()` deletes them — called either
+		// `checkview_complete_test()` deletes them — called either
 		// synchronously from form-helper submission hooks, or via
 		// `checkview_complete_test_deferred` on `shutdown` (which is gated
 		// on Woo order-completion `did_action()` checks so options survive
 		// intermediate test requests like cart visits and Store API cart
 		// fetches until the actual order-creating request's shutdown).
-		if ( ! defined( 'CV_DISABLE_WEBHOOKS' ) && $disable_webhooks ) {
-			define( 'CV_DISABLE_WEBHOOKS', 'true' );
+		if ( ! defined( 'CHECKVIEW_DISABLE_WEBHOOKS' ) && $disable_webhooks ) {
+			define( 'CHECKVIEW_DISABLE_WEBHOOKS', 'true' );
 
-			Checkview_Admin_Logs::add( 'ip-logs', 'Defined constant [CV_DISABLE_WEBHOOKS] as [' . CV_DISABLE_WEBHOOKS . '].' );
+			Checkview_Admin_Logs::add( 'ip-logs', 'Defined constant [CHECKVIEW_DISABLE_WEBHOOKS] as [' . CHECKVIEW_DISABLE_WEBHOOKS . '].' );
 
-			cv_update_option( 'disable_webhooks_' . $cv_test_id, 'true', false );
+			checkview_update_option( 'disable_webhooks_' . $cv_test_id, 'true', false );
 		}
 
 		if ( 'true' === $disable_actions ) {
-			cv_update_option( 'disable_actions_' . $cv_test_id, 'true', false );
+			checkview_update_option( 'disable_actions_' . $cv_test_id, 'true', false );
 		}
 
 		// `_set_at` is set ONCE per test-init — do NOT re-set it from form
 		// helpers, that would extend the staleness window the watchdog enforces.
-		// Not autoloaded: a timed-out test never reaches complete_checkview_test()
+		// Not autoloaded: a timed-out test never reaches checkview_complete_test()
 		// and so orphans both keys permanently.
 		if ( 'true' === $allow_original_recipients && ! empty( $cv_test_id ) ) {
-			cv_update_option( 'allow_original_recipients_' . $cv_test_id, 'true', false );
-			cv_update_option( 'allow_original_recipients_set_at_' . $cv_test_id, (string) time(), false );
+			checkview_update_option( 'allow_original_recipients_' . $cv_test_id, 'true', false );
+			checkview_update_option( 'allow_original_recipients_set_at_' . $cv_test_id, (string) time(), false );
 		}
 
 		delete_transient( 'checkview_forms_test_transient' );
@@ -749,7 +755,7 @@ class Checkview_Admin {
 	 */
 	public function checkview_hide_me( array $plugins ): array {
 		$hide_me = get_option( 'checkview_hide_me', false );
-		if ( ! is_array( $plugins ) || false == $hide_me ) {
+		if ( ! is_array( $plugins ) || ! $hide_me ) {
 			return $plugins;
 		}
 		foreach ( $plugins as $slug => $brand ) {
@@ -772,7 +778,7 @@ class Checkview_Admin {
 	public function checkview_handle_plugin_health_info( $plugins ) {
 		$hide_me = get_option( 'checkview_hide_me', false );
 		if ( ! isset( $plugins['wp-plugins-active'] ) ||
-			! isset( $plugins['wp-plugins-active']['fields'] ) || false == $hide_me ) {
+			! isset( $plugins['wp-plugins-active']['fields'] ) || ! $hide_me ) {
 			return $plugins;
 		}
 		foreach ( $plugins as $slug => $brand ) {
@@ -795,11 +801,12 @@ class Checkview_Admin {
 	 */
 	public function checkview_hide_plugin_details( $plugin_metas, $slug ) {
 		$hide_me = get_option( 'checkview_hide_me', false );
-		if ( ! is_array( $plugin_metas ) || false == $hide_me || 'checkview' !== $slug ) {
+		if ( ! is_array( $plugin_metas ) || ! $hide_me || 'checkview' !== $slug ) {
 			return $plugin_metas;
 		}
 
 		foreach ( $plugin_metas as $plugin_key => $plugin_value ) {
+			// phpcs:ignore WordPress.WP.I18n.LowLevelTranslationFunction, WordPress.WP.I18n.MissingArgDomain -- Must match core's own 'View details' string.
 			if ( strpos( $plugin_value, sprintf( '>%s<', translate( 'View details' ) ) ) ) {
 				unset( $plugin_metas[ $plugin_key ] );
 				break;

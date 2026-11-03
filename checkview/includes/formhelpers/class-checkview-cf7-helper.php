@@ -47,7 +47,7 @@ if ( ! class_exists( 'Checkview_Cf7_Helper' ) ) {
 		 */
 		public function __construct() {
 			$this->loader = new Checkview_Loader();
-			if ( defined( 'TEST_EMAIL' ) ) {
+			if ( defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
 				// change emial address.
 				add_filter(
 					'wpcf7_mail_components',
@@ -137,11 +137,11 @@ if ( ! class_exists( 'Checkview_Cf7_Helper' ) ) {
 				99
 			);
 
-			// Set Piped values back to original values for required select fields
-			add_filter('wpcf7_posted_data_select*', array($this, 'checkview_handled_cf7_piped_data'), 99, 3);
+			// Set Piped values back to original values for required select fields.
+			add_filter( 'wpcf7_posted_data_select*', array( $this, 'checkview_handled_cf7_piped_data' ), 99, 3 );
 
-			// Set Piped values back to original values for optional select fields
-			add_filter('wpcf7_posted_data_select', array($this, 'checkview_handled_cf7_piped_data'), 99, 3);
+			// Set Piped values back to original values for optional select fields.
+			add_filter( 'wpcf7_posted_data_select', array( $this, 'checkview_handled_cf7_piped_data' ), 99, 3 );
 
 			// disable_actions enumeration: when the flow's disable_actions flag
 			// resolves to "yes", remove third-party callbacks on CF7's email-stage
@@ -166,6 +166,41 @@ if ( ! class_exists( 'Checkview_Cf7_Helper' ) ) {
 				-PHP_INT_MAX,
 				0
 			);
+
+			// WP Armour is not covered by the spam bypasses above: it invalidates
+			// the submission itself rather than flagging it as spam, so
+			// `wpcf7_spam` and `wpcf7_skip_spam_check` never see it.
+			//
+			// On `init` at PHP_INT_MAX because WP Armour includes its
+			// integrations from an `init` callback at the default priority
+			// (wp-armour.php:17-24), the same priority this helper loads at.
+			add_action(
+				'init',
+				array( $this, 'checkview_unhook_wp_armour' ),
+				PHP_INT_MAX
+			);
+		}
+
+		/**
+		 * Removes WP Armour's Contact Form 7 validation callback for this request.
+		 *
+		 * Degrades to a logged no-op — nothing removed and no such function means
+		 * the plugin is absent; the function present but not removable means it
+		 * changed priority or was renamed, which is worth surfacing.
+		 *
+		 * @since 2.3.0
+		 *
+		 * @return void
+		 */
+		public function checkview_unhook_wp_armour() {
+			if ( remove_filter( 'wpcf7_validate', 'wpa_contactform7_extra_validation', 10 ) ) {
+				Checkview_Admin_Logs::add( 'ip-logs', 'Unhooked WP Armour from wpcf7_validate for this CheckView test.' );
+				return;
+			}
+
+			if ( function_exists( 'wpa_contactform7_extra_validation' ) ) {
+				Checkview_Admin_Logs::add( 'ip-logs', 'WP Armour detected but its wpcf7_validate callback was not removable (priority changed or renamed?) — CF7 submissions may still be rejected as spam.' );
+			}
 		}
 
 		/**
@@ -202,7 +237,7 @@ if ( ! class_exists( 'Checkview_Cf7_Helper' ) ) {
 		 * @return void
 		 */
 		public function checkview_cf7_disable_actions_enumerate() {
-			$cv_test_id = get_checkview_test_id();
+			$cv_test_id = checkview_get_test_id();
 			if ( ! $cv_test_id || 'true' !== get_option( 'disable_actions_' . $cv_test_id, false ) ) {
 				return;
 			}
@@ -242,17 +277,17 @@ if ( ! class_exists( 'Checkview_Cf7_Helper' ) ) {
 		 *   plain function / no class KEEP (unidentifiable, defensive)
 		 *   default                 REMOVE
 		 *
-		 * @param mixed $callable Callback as stored in WP_Hook::callbacks.
+		 * @param mixed $callback Callback as stored in WP_Hook::callbacks.
 		 * @return bool True if the callback should be removed.
 		 */
-		private function should_remove( $callable ) {
+		private function should_remove( $callback ) {
 			$class_name = '';
-			if ( is_array( $callable ) && isset( $callable[0] ) ) {
-				$class_name = is_object( $callable[0] ) ? get_class( $callable[0] ) : (string) $callable[0];
-			} elseif ( is_object( $callable ) ) {
-				$class_name = get_class( $callable );
-			} elseif ( is_string( $callable ) && strpos( $callable, '::' ) !== false ) {
-				list( $class_name, ) = explode( '::', $callable, 2 );
+			if ( is_array( $callback ) && isset( $callback[0] ) ) {
+				$class_name = is_object( $callback[0] ) ? get_class( $callback[0] ) : (string) $callback[0];
+			} elseif ( is_object( $callback ) ) {
+				$class_name = get_class( $callback );
+			} elseif ( is_string( $callback ) && strpos( $callback, '::' ) !== false ) {
+				list( $class_name, ) = explode( '::', $callback, 2 );
 			}
 
 			if ( 'Closure' === $class_name ) {
@@ -284,22 +319,22 @@ if ( ! class_exists( 'Checkview_Cf7_Helper' ) ) {
 		public function checkview_cf7_before_send_mail( $form_tag ) {
 			global $wpdb;
 
-			$form_id = $form_tag->id();
+			$form_id              = $form_tag->id();
 			$wp_filesystem_direct = new WP_Filesystem_Direct( array() );
-			$checkview_test_id = get_checkview_test_id();
+			$checkview_test_id    = checkview_get_test_id();
 
 			if ( empty( $checkview_test_id ) ) {
 				$checkview_test_id = $form_id . gmdate( 'Ymd' );
 			}
 
-			$upload_dir = wp_upload_dir();
+			$upload_dir     = wp_upload_dir();
 			$cv_cf7_dirname = $upload_dir['basedir'] . '/cv_cf7_uploads';
 
 			if ( ! file_exists( $cv_cf7_dirname ) ) {
 				$wp_filesystem_direct->mkdir( $cv_cf7_dirname, 0777, true );
 			}
 
-			$time_now = time();
+			$time_now   = time();
 			$submission = WPCF7_Submission::get_instance();
 
 			if ( $submission ) {
@@ -319,12 +354,13 @@ if ( ! class_exists( 'Checkview_Cf7_Helper' ) ) {
 					}
 				}
 
-				$allowed_tags = $tags_names;
+				$allowed_tags     = $tags_names;
 				$not_allowed_tags = array( 'g-recaptcha-response' );
-				$data = $submission->get_posted_data();
-				$files = $submission->uploaded_files();
-				$uploaded_files = array();
+				$data             = $submission->get_posted_data();
+				$files            = $submission->uploaded_files();
+				$uploaded_files   = array();
 
+				// phpcs:ignore WordPress.Security.NonceVerification.Missing -- Runs in CF7 submission hook; only file keys are read.
 				foreach ( $_FILES as $file_key => $file ) {
 					array_push( $uploaded_files, $file_key );
 				}
@@ -340,28 +376,28 @@ if ( ! class_exists( 'Checkview_Cf7_Helper' ) ) {
 				$form_data = array();
 
 				foreach ( $data as $key => $d ) {
-					if ( ! in_array( $key, $allowed_tags ) ) {
+					if ( ! in_array( $key, $allowed_tags, true ) ) {
 						continue;
 					}
 
-					if ( ! in_array( $key, $not_allowed_tags ) && ! in_array( $key, $uploaded_files ) ) {
+					if ( ! in_array( $key, $not_allowed_tags, true ) && ! in_array( $key, $uploaded_files, true ) ) {
 						$tmp_d = $d;
 
 						if ( ! is_array( $d ) ) {
-							$bl = array( '\"', "\'", '/', '\\', '"', "'" );
-							$wl = array( '&quot;', '&#039;', '&#047;', '&#092;', '&quot;', '&#039;' );
+							$bl    = array( '\"', "\'", '/', '\\', '"', "'" );
+							$wl    = array( '&quot;', '&#039;', '&#047;', '&#092;', '&quot;', '&#039;' );
 							$tmp_d = str_replace( $bl, $wl, $tmp_d );
 						}
 
 						if ( is_array( $d ) ) {
-							$tmp_d = serialize( $d );
+							$tmp_d = maybe_serialize( $d );
 						}
 
 						$form_data[ $key ] = $tmp_d;
 					}
 
-					if ( in_array( $key, $uploaded_files ) ) {
-						$file = is_array( $files[ $key ] ) ? reset( $files[ $key ] ) : $files[ $key ];
+					if ( in_array( $key, $uploaded_files, true ) ) {
+						$file      = is_array( $files[ $key ] ) ? reset( $files[ $key ] ) : $files[ $key ];
 						$file_name = empty( $file ) ? '' : $time_now . '-' . $key . '-' . basename( $file );
 						// Store under suffixed key for backward compat (no current readers, but preserved).
 						$form_data[ $key . 'cv_cf7_file' ] = $file_name;
@@ -373,13 +409,13 @@ if ( ! class_exists( 'Checkview_Cf7_Helper' ) ) {
 
 				// insert entry.
 				$entry_data  = array(
-					'form_id' => $form_id,
-					'status' => 'publish',
-					'source_url' => isset( $_SERVER['HTTP_REFERER'] ) ? substr( sanitize_url( wp_unslash( $_SERVER['HTTP_REFERER'] ) ), 0, 200 ) : '',
+					'form_id'      => $form_id,
+					'status'       => 'publish',
+					'source_url'   => isset( $_SERVER['HTTP_REFERER'] ) ? substr( sanitize_url( wp_unslash( $_SERVER['HTTP_REFERER'] ) ), 0, 200 ) : '',
 					'date_created' => current_time( 'mysql' ),
 					'date_updated' => current_time( 'mysql' ),
-					'uid' => $checkview_test_id,
-					'form_type' => 'CF7',
+					'uid'          => $checkview_test_id,
+					'form_type'    => 'CF7',
 				);
 				$entry_table = $wpdb->prefix . 'cv_entry';
 
@@ -393,7 +429,7 @@ if ( ! class_exists( 'Checkview_Cf7_Helper' ) ) {
 
 				// Skip meta loop when parent insert failed: $wpdb->insert_id
 				// is 0, meta rows would be orphaned with entry_id=0.
-				// complete_checkview_test() below still runs.
+				// checkview_complete_test() below still runs.
 				if ( $result ) {
 					$inserted_entry_id = $wpdb->insert_id;
 					$entry_meta_table  = $wpdb->prefix . 'cv_entry_meta';
@@ -401,26 +437,26 @@ if ( ! class_exists( 'Checkview_Cf7_Helper' ) ) {
 
 					foreach ( $form_data as $key => $val ) {
 						$entry_metadata = array(
-							'uid' => $checkview_test_id,
-							'form_id' => $form_id,
-							'entry_id' => $inserted_entry_id,
-							'meta_key' => checkview_truncate_meta_key( $key ),
+							'uid'        => $checkview_test_id,
+							'form_id'    => $form_id,
+							'entry_id'   => $inserted_entry_id,
+							// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
+							'meta_key'   => checkview_truncate_meta_key( $key ),
 							'meta_value' => $val,
+							// phpcs:enable WordPress.DB.SlowDBQuery
 						);
 
 						$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 						if ( $result ) {
-							$count++;
+							++$count;
 						}
 					}
 
 					if ( $count > 0 ) {
 						Checkview_Admin_Logs::add( 'ip-logs', 'Cloned submission entry meta data (inserted ' . $count . ' rows into ' . $entry_meta_table . ').' );
-					} else {
-						if ( count( $form_data ) > 0 ) {
+					} elseif ( count( $form_data ) > 0 ) {
 							Checkview_Admin_Logs::add( 'ip-logs', 'Failed to clone submission entry meta data. wpdb->last_error=[' . $wpdb->last_error . ']' );
-						}
 					}
 				}
 
@@ -436,15 +472,15 @@ if ( ! class_exists( 'Checkview_Cf7_Helper' ) ) {
 		 * @param array              $result       Submission result (unused).
 		 * @return void
 		 */
-		public function checkview_cf7_complete_after_submit( $contact_form = null, $result = array() ) {
+		public function checkview_cf7_complete_after_submit( $contact_form = null, $result = array() ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 			if ( '' === $this->pending_test_id ) {
 				return;
 			}
 
-			$test_id                = $this->pending_test_id;
-			$this->pending_test_id  = '';
+			$test_id               = $this->pending_test_id;
+			$this->pending_test_id = '';
 
-			complete_checkview_test( $test_id );
+			checkview_complete_test( $test_id );
 		}
 
 		/**
@@ -469,20 +505,20 @@ if ( ! class_exists( 'Checkview_Cf7_Helper' ) ) {
 			// New: append-mode branch — deliver to BOTH real recipient and test inbox.
 			// CF7's $args['recipient'] is a comma-separated string. additional_headers
 			// is a CRLF-separated string.
-			if ( cv_should_allow_original_recipients() ) {
-				$args['recipient']          = cv_append_test_email_string( $args['recipient'] );
-				$args['additional_headers'] = cv_inject_reply_to_header( $args['additional_headers'] ?? '' );
+			if ( checkview_should_allow_original_recipients() ) {
+				$args['recipient']          = checkview_append_test_email_string( $args['recipient'] );
+				$args['additional_headers'] = checkview_inject_reply_to_header( $args['additional_headers'] ?? '' );
 
 				Checkview_Admin_Logs::add( 'ip-logs', 'Append-mode submission recipient email address: ' . wp_json_encode( $args['recipient'] ) );
 				Checkview_Admin_Logs::add( 'ip-logs', 'Append-mode submission email additional headers: ' . wp_json_encode( $args['additional_headers'] ) );
 				return $args;
 			}
 
-			$cv_test_id = get_checkview_test_id();
+			$cv_test_id = checkview_get_test_id();
 			if ( $cv_test_id && 'true' === get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
-				$args['recipient'] .= ', ' . TEST_EMAIL;
+				$args['recipient'] .= ', ' . CHECKVIEW_TEST_EMAIL;
 			} else {
-				$args['recipient'] = TEST_EMAIL;
+				$args['recipient'] = CHECKVIEW_TEST_EMAIL;
 				$headers           = '';
 				// Remove bcc and cc headers.
 				$headers = preg_replace( '/^(bcc:|cc:).*$/mi', '', $args['additional_headers'] );
@@ -526,16 +562,16 @@ if ( ! class_exists( 'Checkview_Cf7_Helper' ) ) {
 		 *
 		 * @param array|mixed|string $value Piped value.
 		 * @param array|mixed|string $value_orig Original value.
-		 * @param mixed $tag Tag.
+		 * @param mixed              $tag Tag.
 		 *
 		 * @return array|mixed|string
 		 */
-		public function checkview_handled_cf7_piped_data( $value, $value_orig, $tag ) {
-			if ( ! is_array( $value ) || ! is_string( $value[0]) || ! is_string( $value_orig ) ) {
+		public function checkview_handled_cf7_piped_data( $value, $value_orig, $tag ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
+			if ( ! is_array( $value ) || ! is_string( $value[0] ) || ! is_string( $value_orig ) ) {
 				return $value;
 			}
 
-			if ($value[0] !== $value_orig) {
+			if ( $value[0] !== $value_orig ) {
 				Checkview_Admin_Logs::add( 'api-logs', 'Detected piped CF7 select field, restoring original value.' );
 
 				return $value_orig;

@@ -8,9 +8,12 @@
  * @subpackage CheckView/admin/
  */
 
+// Logger needs raw stream ops (flock/ftruncate) that WP_Filesystem lacks, and must never warn while logging.
+// phpcs:disable WordPress.WP.AlternativeFunctions, WordPress.PHP.NoSilencedErrors
+
 /**
  * Handles admin logs.
- * 
+ *
  * Reads, writes, and clears admin logs. Supports writing to differnt log
  * files within the logs folder, which is useful for splitting logs depending
  * on their purpose.
@@ -28,7 +31,7 @@ class Checkview_Admin_Logs {
 	 * @var array
 	 * @access private
 	 */
-	private static $_handles;
+	private static $handles;
 
 	/**
 	 * Base name of the logs folder, kept as the prefix of the current one.
@@ -44,20 +47,20 @@ class Checkview_Admin_Logs {
 
 	/**
 	 * Constructor.
-	 * 
+	 *
 	 * Defines log handles property as an empty array.
 	 */
 	public function __construct() {
-		self::$_handles = array();
+		self::$handles = array();
 	}
 
 	/**
 	 * Destructor.
-	 * 
+	 *
 	 * Closes file pointers when this class is destroyed.
 	 */
 	public function __destruct() {
-		foreach ( self::$_handles as $handle ) {
+		foreach ( self::$handles as $handle ) {
 			if ( is_resource( $handle ) ) {
 				@fclose( $handle );
 			}
@@ -116,7 +119,6 @@ class Checkview_Admin_Logs {
 				$checkview_options                         = apply_filters( 'checkview_save_log_options', $checkview_options );
 				update_option( 'checkview_log_options', $checkview_options );
 				$uploads = 'true';
-
 			}
 			wp_safe_redirect( add_query_arg( 'logs-settings-updated', $uploads, isset( $_POST['_wp_http_referer'] ) ? sanitize_url( wp_unslash( $_POST['_wp_http_referer'] ) ) : '' ) );
 			exit;
@@ -404,6 +406,7 @@ class Checkview_Admin_Logs {
 
 		if ( ! file_exists( $htaccess ) || false === strpos( (string) @file_get_contents( $htaccess ), 'Require all denied' ) ) {
 			if ( false === @file_put_contents( $htaccess, $rules, LOCK_EX ) ) {
+				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Desired production debug logging.
 				error_log( 'CheckView: Could not write the .htaccess file in the logs folder.' );
 			}
 		}
@@ -411,19 +414,20 @@ class Checkview_Admin_Logs {
 		$index = $folder . 'index.html';
 
 		if ( ! file_exists( $index ) && false === @file_put_contents( $index, '' ) ) {
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Desired production debug logging.
 			error_log( 'CheckView: Could not write the index.html file in the logs folder.' );
 		}
 	}
 
 	/**
 	 * Reads a log file.
-	 * 
+	 *
 	 * If given a `$lines`, this function will only return the last `$lines`
 	 * lines of the chosen log file.
-	 * 
+	 *
 	 * @since 1.6.0
-	 * 
-	 * @param string $handle File handle.
+	 *
+	 * @param string  $handle File handle.
 	 * @param integer $lines Number of line to limit.
 	 * @return array
 	 */
@@ -432,18 +436,14 @@ class Checkview_Admin_Logs {
 		$results = array();
 
 		// Open the file for reading.
-		if ( self::open( $handle, 'r' ) && is_resource( self::$_handles[ $handle ] ) ) {
-
-			while ( ! feof( self::$_handles[ $handle ] ) ) {
-
-				$line = fgets( self::$_handles[ $handle ], 4096 );
+		if ( self::open( $handle, 'r' ) && is_resource( self::$handles[ $handle ] ) ) {
+			while ( ! feof( self::$handles[ $handle ] ) ) {
+				$line = fgets( self::$handles[ $handle ], 4096 );
 
 				array_push( $results, $line );
 
 				if ( count( $results ) > $lines + 1 ) {
-
 					array_shift( $results );
-
 				}
 			}
 		}
@@ -454,9 +454,9 @@ class Checkview_Admin_Logs {
 	/**
 	 * Reads the tail of a log file with bounded memory.
 	 *
-	 * get-logs used to file_get_contents() every file whole, so one noisy day
-	 * (Woo checkout sites reach 15 MB a day) pulled tens of MB into memory and
-	 * shipped it, only for the SaaS client to trim to the last few thousand
+	 * The get-logs endpoint used to file_get_contents() every file whole, so one
+	 * noisy day (Woo checkout sites reach 15 MB a day) pulled tens of MB into memory
+	 * and shipped it, only for the SaaS client to trim to the last few thousand
 	 * lines on arrival. This seeks the trailing bytes instead, so the read is
 	 * capped no matter how large the file grew inside the retention window.
 	 *
@@ -512,7 +512,7 @@ class Checkview_Admin_Logs {
 	 * @since 1.2.0 Checks if the directory exists
 	 *
 	 * @access private
-	 * @param mixed $handle File handle.
+	 * @param mixed  $handle File handle.
 	 * @param string $permission File permissions.
 	 * @return bool True on success, false otherwise.
 	 */
@@ -526,9 +526,8 @@ class Checkview_Admin_Logs {
 
 			return false;
 		}
-		self::$_handles[ $handle ] = @fopen( $path . $handle . '.log', $permission );
-		if ( self::$_handles[ $handle ] ) {
-
+		self::$handles[ $handle ] = @fopen( $path . $handle . '.log', $permission );
+		if ( self::$handles[ $handle ] ) {
 			return true;
 		}
 
@@ -537,7 +536,7 @@ class Checkview_Admin_Logs {
 
 	/**
 	 * Writes to a log file.
-	 * 
+	 *
 	 * Given a log file's `$handle`, append `$message` to it. Prepends each new
 	 * message with the time the log was written.
 	 *
@@ -571,17 +570,17 @@ class Checkview_Admin_Logs {
 					$sanitize_table[ chr( $i ) ] = ' ';
 				}
 				// HTML/browser log viewers render these as line breaks.
-				$sanitize_table["\xC2\x85"]     = ' '; // U+0085 NEL
-				$sanitize_table["\xE2\x80\xA8"] = ' '; // U+2028 LINE SEPARATOR
-				$sanitize_table["\xE2\x80\xA9"] = ' '; // U+2029 PARAGRAPH SEPARATOR
+				$sanitize_table["\xC2\x85"]     = ' '; // U+0085 NEL.
+				$sanitize_table["\xE2\x80\xA8"] = ' '; // U+2028 LINE SEPARATOR.
+				$sanitize_table["\xE2\x80\xA9"] = ' '; // U+2029 PARAGRAPH SEPARATOR.
 			}
 			$message = strtr( $message, $sanitize_table );
 		}
 		$handle = $handle . '-log-' . gmdate( 'Y-m-d' );
-		if ( self::open( $handle ) && is_resource( self::$_handles[ $handle ] ) ) {
+		if ( self::open( $handle ) && is_resource( self::$handles[ $handle ] ) ) {
 			$time   = self::get_now()->format( 'm-d-Y @ H:i:s -' ); // Grab Time.
-			$result = @fwrite( self::$_handles[ $handle ], $time . ' ' . $message . "\n" );
-			@fclose( self::$_handles[ $handle ] );
+			$result = @fwrite( self::$handles[ $handle ], $time . ' ' . $message . "\n" );
+			@fclose( self::$handles[ $handle ] );
 		}
 
 		do_action( 'checkview_log_add', $handle, $message );
@@ -591,7 +590,7 @@ class Checkview_Admin_Logs {
 	 * Gets the current date-time.
 	 *
 	 * @since 1.5.1
-	 * 
+	 *
 	 * @param string $type Type of date.
 	 * @return mixed
 	 */
@@ -608,14 +607,12 @@ class Checkview_Admin_Logs {
 	 */
 	public static function get_current_time( $type = 'mysql' ) {
 		if ( is_multisite() ) {
-
 			switch_to_blog( get_current_site()->blog_id );
 
 			$time = current_time( $type );
 
 			restore_current_blog();
 		} else {
-
 			$time = current_time( $type );
 		}
 
@@ -628,8 +625,8 @@ class Checkview_Admin_Logs {
 	 * @param mixed $handle File handle.
 	 */
 	public function clear( $handle ) {
-		if ( self::open( $handle ) && is_resource( self::$_handles[ $handle ] ) ) {
-			@ftruncate( self::$_handles[ $handle ], 0 );
+		if ( self::open( $handle ) && is_resource( self::$handles[ $handle ] ) ) {
+			@ftruncate( self::$handles[ $handle ], 0 );
 		}
 
 		do_action( 'checkview_log_clear', $handle );

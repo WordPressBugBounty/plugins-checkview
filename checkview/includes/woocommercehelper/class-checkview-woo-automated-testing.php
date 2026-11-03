@@ -76,8 +76,8 @@ class Checkview_Woo_Automated_Testing {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @param string $plugin_name The name of this plugin.
-	 * @param string $version The version of this plugin.
+	 * @param string           $plugin_name The name of this plugin.
+	 * @param string           $version The version of this plugin.
 	 * @param Checkview_Loader $loader Loads the hooks.
 	 */
 	public function __construct( $plugin_name, $version, $loader ) {
@@ -180,6 +180,46 @@ class Checkview_Woo_Automated_Testing {
 				'checkview_mailchimp_should_push_order'
 			);
 
+			// MailerLite for WooCommerce kill-switch: strips the plugin's
+			// cart/checkout/order hook callbacks for the current test request.
+			// Registered always-on (NOT inside checkview_test_mode, which skips
+			// is_admin()) because the plugin pushes the checkout email to
+			// MailerLite from an admin-ajax.php request
+			// (`woo_mailerlite_set_cart_email`). The callback gates itself on
+			// the test ID + `disable_*_<uuid>` options. `init @ 99` runs after
+			// `checkview_init_current_test` (`init @ 10`) and after the plugin
+			// registers its hooks (`plugins_loaded @ 12`).
+			$this->loader->add_action(
+				'init',
+				$this,
+				'checkview_mailerlite_killswitch',
+				99,
+				0
+			);
+
+			// MailerLite order-sync backstop for requests the kill-switch never
+			// sees (gateway callbacks, cron, admin edits after the test ends).
+			// Stamps the plugin's own `order_sent` short-circuit transient on
+			// test orders. Runs after `checkview_stamp_order_meta`
+			// (STAMP_PRIORITY) on order creation/save, and before the plugin's
+			// `handleOrderStatusChanged` (priority 10) on its trigger hooks.
+			$checkview_mailerlite_order_hooks = array(
+				'woocommerce_new_order'               => self::STAMP_PRIORITY + 1,
+				'woocommerce_after_order_object_save' => self::STAMP_PRIORITY + 1,
+				'woocommerce_order_status_changed'    => 1,
+				'woocommerce_saved_order_items'       => 1,
+				'woocommerce_order_status_completed'  => 1,
+			);
+			foreach ( $checkview_mailerlite_order_hooks as $hook_name => $priority ) {
+				$this->loader->add_action(
+					$hook_name,
+					$this,
+					'checkview_mailerlite_block_order_sync',
+					$priority,
+					1
+				);
+			}
+
 			// Hide CheckView test orders from the WooCommerce REST API so
 			// pull-based integrations (Shippo et al.) that poll
 			// `GET /wc/v3/orders` with store API keys never ingest them. The
@@ -212,6 +252,32 @@ class Checkview_Woo_Automated_Testing {
 				2
 			);
 
+			// Hide the test product from the unauthenticated Store API. The
+			// product's `product_visibility` terms are correct — the shop
+			// archive is clean and `?catalog_visibility=visible` excludes it —
+			// but Store API only builds the `product_visibility` tax_query when
+			// the request supplies a `catalog_visibility` param, so a request
+			// without one applies NO visibility filtering at all and returns
+			// hidden products. Verified in WC 10.9.4,
+			// StoreApi/Utilities/ProductQuery::prepare_objects_query().
+			//
+			// Registered always-on (NOT behind the is_bot() gate in
+			// checkview_test_mode) because a third-party Store API poll is not a
+			// bot request — same reasoning as the orders REST guard above.
+			//
+			// Via rest_pre_dispatch rather than a bare pre_get_posts: Store API
+			// exposes no query-args filter to hook (ProductQuery has one
+			// apply_filters, for pricing; the Products route has none), so
+			// pre_get_posts is the only seam — and it must be attached for this
+			// request only, never globally on customer front-end traffic.
+			$this->loader->add_filter(
+				'rest_pre_dispatch',
+				$this,
+				'checkview_maybe_hide_test_product_from_store_api',
+				10,
+				3
+			);
+
 			$this->loader->add_filter(
 				'woocommerce_email_recipient_new_order',
 				$this,
@@ -241,7 +307,7 @@ class Checkview_Woo_Automated_Testing {
 			);
 
 			// Reply-To injection on WC email headers — defends against MTA
-			// variance (Postmark sees TEST_EMAIL in ReplyTo even if customer
+			// variance (Postmark sees CHECKVIEW_TEST_EMAIL in ReplyTo even if customer
 			// MTA strips it from To). Single filter for all WC emails;
 			// callback gates on $email->id matching MVP scope.
 			$this->loader->add_filter(
@@ -288,7 +354,7 @@ class Checkview_Woo_Automated_Testing {
 	public function checkview_after_delete_product( $post_id ) {
 		$product_id = get_option( 'checkview_woo_product_id' );
 
-		if ( $product_id && $post_id == $product_id ) {
+		if ( $product_id && (int) $post_id === (int) $product_id ) {
 			// Delete the option storing the product ID if the deleted post is the test product.
 			delete_option( 'checkview_woo_product_id' );
 		}
@@ -303,7 +369,7 @@ class Checkview_Woo_Automated_Testing {
 		// Check if the trashed post is the test product.
 		$product_id = get_option( 'checkview_woo_product_id' );
 
-		if ( $post_id == $product_id ) {
+		if ( (int) $post_id === (int) $product_id ) {
 			// If the product being trashed matches the stored product ID, untrash it.
 			wp_untrash_post( $product_id );
 		}
@@ -327,6 +393,7 @@ class Checkview_Woo_Automated_Testing {
 		// Check if WooCommerce is active.
 		if ( class_exists( 'WooCommerce' ) ) {
 			// Check if the parameter exists in the URL.
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- CheckView test param; gated on is_bot() above.
 			if ( isset( $_GET['checkview_empty_cart'] ) && 'true' === $_GET['checkview_empty_cart'] && ( is_product() || is_shop() ) ) {
 				// Get WooCommerce cart instance.
 				$woocommerce_instance = WC();
@@ -512,8 +579,8 @@ class Checkview_Woo_Automated_Testing {
 			return $query_args;
 		}
 
-		$existing = $query_args['post__not_in'] ?? array();
-		$query_args['post__not_in'] = wp_parse_id_list( $existing );
+		$existing                     = $query_args['post__not_in'] ?? array();
+		$query_args['post__not_in']   = wp_parse_id_list( $existing );
 		$query_args['post__not_in'][] = (int) $product_id;
 
 		return $query_args;
@@ -527,7 +594,7 @@ class Checkview_Woo_Automated_Testing {
 	 * @param array $atts  Widget shortcode attributes.
 	 * @return array
 	 */
-	public function checkview_hide_test_product_from_qi_addons_query( $args, $atts ) {
+	public function checkview_hide_test_product_from_qi_addons_query( $args, $atts ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 		if ( ! isset( $args['post_type'] ) || 'product' !== $args['post_type'] ) {
 			return $args;
 		}
@@ -537,11 +604,129 @@ class Checkview_Woo_Automated_Testing {
 			return $args;
 		}
 
-		$existing = $args['post__not_in'] ?? array();
-		$args['post__not_in'] = wp_parse_id_list( $existing );
+		$existing               = $args['post__not_in'] ?? array();
+		$args['post__not_in']   = wp_parse_id_list( $existing );
 		$args['post__not_in'][] = (int) $product_id;
 
 		return $args;
+	}
+
+	/**
+	 * Attaches the Store API product exclusion to this request only.
+	 *
+	 * Runs on `rest_pre_dispatch` for every REST request, matches the Store API
+	 * product-listing routes, and only then registers the `pre_get_posts`
+	 * callback — so no global query filter is added to ordinary front-end
+	 * traffic. Returns `$result` untouched; this is a filter purely for its
+	 * position in the request lifecycle.
+	 *
+	 * Matches `/wc/store/vN/products` and `/wc/store/vN/products/collection-data`.
+	 * The version is matched loosely so a future Store API v2 is covered.
+	 * `collection-data` is included because it derives its price range and
+	 * counts from a real WP_Query whose generated SQL becomes a subquery
+	 * (ProductQueryFilters), so the test product otherwise drags the store's
+	 * price-filter minimum down to its own price. Single-product reads
+	 * (`/products/<id>`) are deliberately not matched — a direct fetch by ID is
+	 * not a listing leak, and hiding it would only turn a known ID into a 404.
+	 *
+	 * @since 2.3.1
+	 *
+	 * @param mixed            $result  Dispatch result, passed through unchanged.
+	 * @param \WP_REST_Server  $server  REST server instance (unused).
+	 * @param \WP_REST_Request $request The REST request being dispatched.
+	 * @return mixed The unmodified `$result`.
+	 */
+	public function checkview_maybe_hide_test_product_from_store_api( $result, $server, $request ) {
+		if ( ! is_object( $request ) || ! method_exists( $request, 'get_route' ) ) {
+			return $result;
+		}
+
+		/*
+		 * The version segment is OPTIONAL and the match is case-insensitive.
+		 * Both matter:
+		 *
+		 *   - WooCommerce registers every Store API route TWICE, once under
+		 *     `wc/store/v1` and once under the bare `wc/store` namespace
+		 *     (StoreApi/RoutesController.php:99-100). `/wc/store/products` is
+		 *     therefore a live, unauthenticated route serving the same handler,
+		 *     and a version-requiring pattern misses it entirely.
+		 *   - `WP_REST_Server::dispatch()` matches routes case-insensitively
+		 *     (`preg_match( '@^' . $route . '$@i', $path )`) but never calls
+		 *     `set_route()`, so `$request->get_route()` returns the caller's
+		 *     path verbatim — `/wc/store/v1/Products` dispatches fine and would
+		 *     slip past a case-sensitive pattern.
+		 */
+		if ( ! preg_match( '#^/wc/store/(?:v\d+/)?products(?:/collection-data)?/?$#i', (string) $request->get_route() ) ) {
+			return $result;
+		}
+
+		if ( empty( get_option( 'checkview_woo_product_id' ) ) ) {
+			return $result;
+		}
+
+		add_filter( 'posts_where', array( $this, 'checkview_exclude_test_product_from_store_api_query' ), 10, 2 );
+
+		return $result;
+	}
+
+	/**
+	 * Excludes the CheckView test product from a Store API product query by
+	 * appending an explicit `ID != x` clause to the WHERE.
+	 *
+	 * Only ever hooked for the duration of a matched Store API request by
+	 * `checkview_maybe_hide_test_product_from_store_api()`. Left registered for
+	 * the rest of that request on purpose: the collection-data endpoint builds
+	 * several WP_Query instances and each one needs the exclusion.
+	 *
+	 * Why a WHERE clause and not `post__not_in`: `WP_Query::get_posts()`
+	 * resolves post-ID restrictions through an if/elseif chain —
+	 * `p` then `post__in` then `post__not_in` (class-wp-query.php:2131-2140).
+	 * Store API maps its own `include` request param straight into `post__in`
+	 * (StoreApi/Utilities/ProductQuery.php:32) and writes it again for
+	 * `on_sale=true` (:199), so ANY request carrying `include` would have made
+	 * `post__not_in` unreachable and the test product would have been returned.
+	 * An appended WHERE clause is additive and cannot be superseded that way.
+	 *
+	 * `post_type` is read as an array because Store API widens it to
+	 * `array( 'product', 'product_variation' )` whenever a `sku` or `slug`
+	 * param is present (ProductQuery.php:47-49) — the test product's slug is
+	 * deterministic, so a string comparison here would have let
+	 * `?slug=checkview-testing-product` through.
+	 *
+	 * The clause also propagates to `/products/collection-data`, which derives
+	 * its price range and counts from `$query->request` (ProductQueryFilters).
+	 *
+	 * @since 2.3.1
+	 *
+	 * @param string    $where WHERE clause of the query.
+	 * @param \WP_Query $query The query being prepared.
+	 * @return string Possibly modified WHERE clause.
+	 */
+	public function checkview_exclude_test_product_from_store_api_query( $where, $query = null ) {
+		global $wpdb;
+
+		if ( ! is_object( $query ) || ! method_exists( $query, 'get' ) ) {
+			return $where;
+		}
+
+		if ( ! in_array( 'product', (array) $query->get( 'post_type' ), true ) ) {
+			return $where;
+		}
+
+		$product_id = (int) get_option( 'checkview_woo_product_id' );
+		if ( $product_id <= 0 ) {
+			return $where;
+		}
+
+		$clause = $wpdb->prepare( " AND {$wpdb->posts}.ID != %d ", $product_id );
+
+		// Idempotent: collection-data runs this several times per request and
+		// `prepare()` output is deterministic for a given id.
+		if ( false !== strpos( $where, $clause ) ) {
+			return $where;
+		}
+
+		return $where . $clause;
 	}
 
 	/**
@@ -566,8 +751,8 @@ class Checkview_Woo_Automated_Testing {
 			return;
 		}
 
-		$test_type = CheckView::test_type();
-		$woo_checkout_types = [ 'full_checkout', 'woo_checkout' ];
+		$test_type          = CheckView::test_type();
+		$woo_checkout_types = array( 'full_checkout', 'woo_checkout' );
 
 		if ( ! in_array( $test_type, $woo_checkout_types, true ) ) {
 			return;
@@ -629,7 +814,7 @@ class Checkview_Woo_Automated_Testing {
 			// The plugin checks for a token and throws before calling cfturnstile_check()
 			// where our cfturnstile_whitelisted filter lives. Adding 'checkview' to the
 			// skipped payment methods list makes turnstile skip validation entirely.
-			// @since 2.0.30
+			// Since 2.0.30.
 			add_filter(
 				'option_cfturnstile_selected_payment_methods',
 				function ( $methods ) {
@@ -656,7 +841,7 @@ class Checkview_Woo_Automated_Testing {
 
 					$is_visible = $product_id === $product->get_id() ? true : $visible;
 
-					if ($is_visible) {
+					if ( $is_visible ) {
 						Checkview_Admin_Logs::add( 'ip-logs', 'Setting Woo test product visibility to true.' );
 
 						return true;
@@ -670,18 +855,18 @@ class Checkview_Woo_Automated_Testing {
 
 			// H1 split (replaces the old combined `checkview_add_custom_fields_after_purchase`):
 			// - `checkview_stamp_order_meta` runs early on `woocommerce_new_order @ priority STAMP_PRIORITY`
-			//   so the order meta is in place BEFORE any addon's hook on the same event fires
-			//   (e.g. Mailchimp for WooCommerce hooks `handleOrderCreate` at priority 200, so we
-			//   stamp at priority 1).
+			// so the order meta is in place BEFORE any addon's hook on the same event fires
+			// (e.g. Mailchimp for WooCommerce hooks `handleOrderCreate` at priority 200, so we
+			// stamp at priority 1).
 			// - `checkview_stamp_order_meta_from_save` runs on every order save
-			//   (`woocommerce_after_order_object_save @ STAMP_PRIORITY`) so WC Block Checkout
-			//   drafts get their meta BEFORE any `order.updated@checkout-draft` webhook fires.
+			// (`woocommerce_after_order_object_save @ STAMP_PRIORITY`) so WC Block Checkout
+			// drafts get their meta BEFORE any `order.updated@checkout-draft` webhook fires.
 			// - `checkview_schedule_order_cleanup` keeps the existing `woocommerce_order_status_changed`
-			//   registration so order deletion is scheduled after the order has its final status.
+			// registration so order deletion is scheduled after the order has its final status.
 			// - `checkview_complete_test_deferred` runs at `shutdown` so per-test options stay alive
-			//   for the entire request — addons firing later in the request (Mailchimp's filter,
-			//   any `woocommerce_webhook_should_deliver` filter) can still read the option to
-			//   decide whether to suppress.
+			// for the entire request — addons firing later in the request (Mailchimp's filter,
+			// any `woocommerce_webhook_should_deliver` filter) can still read the option to
+			// decide whether to suppress.
 			$this->loader->add_action(
 				'woocommerce_new_order',
 				$this,
@@ -731,7 +916,7 @@ class Checkview_Woo_Automated_Testing {
 			// blocks any Single_Order enqueue the sweep can't reach.
 			//
 			// Hooked on `init @ 99` — runs AFTER
-			// `checkview_init_current_test` (`init @ 10`) defines CV_TEST_ID
+			// `checkview_init_current_test` (`init @ 10`) defines CHECKVIEW_TEST_ID
 			// and writes the `disable_*_<uuid>` options, AFTER the Blocks
 			// integration registers its static callbacks
 			// (`woocommerce_blocks_loaded`, fires during WooCommerce's
@@ -766,30 +951,30 @@ class Checkview_Woo_Automated_Testing {
 	 *
 	 * @param string   $recipient Recipient.
 	 * @param WC_Order $order WooCommerce order.
-	 * @param Email    $self WooCommerce Email object.
+	 * @param Email    $email WooCommerce Email object.
 	 * @return string
 	 */
-	public function checkview_filter_admin_emails( $recipient, $order, $self ) {
+	public function checkview_filter_admin_emails( $recipient, $order, $email ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 
 		$payment_method  = ( \is_object( $order ) && \method_exists( $order, 'get_payment_method' ) ) ? $order->get_payment_method() : false;
 		$payment_made_by = is_object( $order ) ? $order->get_meta( 'payment_made_by' ) : '';
 		$visitor_ip      = checkview_get_visitor_ip();
 		// Check view Bot IP.
 		$cv_bot_ip = checkview_get_api_ip();
-		if ( ( get_checkview_test_id() || ( is_array( $cv_bot_ip ) && in_array( $visitor_ip, $cv_bot_ip ) ) ) || ( 'checkview' === $payment_method || 'checkview' === $payment_made_by ) ) {
+		if ( ( checkview_get_test_id() || ( is_array( $cv_bot_ip ) && in_array( $visitor_ip, $cv_bot_ip, true ) ) ) || ( 'checkview' === $payment_method || 'checkview' === $payment_made_by ) ) {
 			// New: append-mode — deliver to BOTH real recipient and test inbox.
-			if ( cv_should_allow_original_recipients() && defined( 'TEST_EMAIL' ) ) {
-				return cv_append_test_email_string( $recipient );
+			if ( checkview_should_allow_original_recipients() && defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
+				return checkview_append_test_email_string( $recipient );
 			}
 
-			if ( defined( 'CV_DISABLE_EMAIL_RECEIPT' ) ) {
-				if ( defined( 'TEST_EMAIL' ) ) {
-					$recipient = $recipient . ', ' . TEST_EMAIL;
+			if ( defined( 'CHECKVIEW_DISABLE_EMAIL_RECEIPT' ) ) {
+				if ( defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
+					$recipient = $recipient . ', ' . CHECKVIEW_TEST_EMAIL;
 				} else {
 					$recipient = $recipient . ', ' . CHECKVIEW_EMAIL;
 				}
-			} elseif ( defined( 'TEST_EMAIL' ) ) {
-				return TEST_EMAIL;
+			} elseif ( defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
+				return CHECKVIEW_TEST_EMAIL;
 			} else {
 				return CHECKVIEW_EMAIL;
 			}
@@ -799,10 +984,10 @@ class Checkview_Woo_Automated_Testing {
 	}
 
 	/**
-	 * Injects Reply-To: TEST_EMAIL into WC email headers when append-mode is
-	 * active for one of the MVP-scoped email types. Defends against MTA
-	 * variance — Postmark sees TEST_EMAIL in the ReplyTo header even if the
-	 * customer's MTA strips it from To.
+	 * Injects Reply-To: CHECKVIEW_TEST_EMAIL into WC email headers when append-mode
+	 * is active for one of the MVP-scoped email types. Defends against MTA
+	 * variance — Postmark sees CHECKVIEW_TEST_EMAIL in the ReplyTo header even
+	 * if the customer's MTA strips it from To.
 	 *
 	 * Gated on email_id matching MVP scope (new_order, failed_order,
 	 * customer_completed_order). Other WC email types pass through unchanged.
@@ -813,12 +998,12 @@ class Checkview_Woo_Automated_Testing {
 	 *
 	 * @return string|array Headers with Reply-To injected (or unchanged).
 	 */
-	public function checkview_inject_reply_to_headers( $headers, $email_id, $email ) {
+	public function checkview_inject_reply_to_headers( $headers, $email_id, $email ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 		$mvp_email_ids = array( 'new_order', 'failed_order', 'customer_completed_order' );
 		if ( ! in_array( $email_id, $mvp_email_ids, true ) ) {
 			return $headers;
 		}
-		return cv_inject_reply_to_header( $headers );
+		return checkview_inject_reply_to_header( $headers );
 	}
 
 	/**
@@ -826,8 +1011,8 @@ class Checkview_Woo_Automated_Testing {
 	 *
 	 * H3 rewrite: previously branched on `'order.'` and `'subscription.'`
 	 * topic prefixes and gated on `payment_method/payment_made_by === 'checkview'`
-	 * with `defined('CV_DISABLE_WEBHOOKS')`. The new design delegates to
-	 * `cv_is_suppressible_test_order()` which implements the unified safety
+	 * with `defined('CHECKVIEW_DISABLE_WEBHOOKS')`. The new design delegates to
+	 * `checkview_is_suppressible_test_order()` which implements the unified safety
 	 * invariant (UUID order meta + active per-test option) — gateway-agnostic
 	 * and topic-broadened (covers `order.*`, `subscription.*`, `coupon.*`,
 	 * `product.*`).
@@ -851,14 +1036,14 @@ class Checkview_Woo_Automated_Testing {
 
 		// Order-scoped topics: `order.*`, `subscription.*`. $arg is an order
 		// (or subscription, which WC stores as an order). The canonical
-		// path: resolve order, check `cv_is_suppressible_test_order` for
+		// path: resolve order, check `checkview_is_suppressible_test_order` for
 		// the meta + options invariants.
 		if ( ! empty( $arg ) && (
 			0 === strpos( (string) $topic, 'order.' )
 			|| 0 === strpos( (string) $topic, 'subscription.' )
 		) ) {
 			$order = wc_get_order( $arg );
-			if ( $order && cv_is_suppressible_test_order( $order ) ) {
+			if ( $order && checkview_is_suppressible_test_order( $order ) ) {
 				return false;
 			}
 
@@ -900,14 +1085,14 @@ class Checkview_Woo_Automated_Testing {
 		// did), those webhooks ship the test customer/product/coupon to
 		// Shippo/Mailchimp/etc.
 		//
-		// Gate them on CV_TEST_ID being defined AND the same option pair
-		// `cv_is_suppressible_test_order` uses. If the request is a
+		// Gate them on CHECKVIEW_TEST_ID being defined AND the same option pair
+		// `checkview_is_suppressible_test_order` uses. If the request is a
 		// CheckView test with active suppression, drop the delivery.
 		// Otherwise pass through (real-customer customer/product/coupon
-		// events deliver normally — they don't have CV_TEST_ID defined).
-		if ( defined( 'CV_TEST_ID' ) && CV_TEST_ID && (
-			get_option( 'disable_webhooks_' . CV_TEST_ID ) === 'true'
-			|| get_option( 'disable_actions_' . CV_TEST_ID ) === 'true'
+		// events deliver normally — they don't have CHECKVIEW_TEST_ID defined).
+		if ( defined( 'CHECKVIEW_TEST_ID' ) && CHECKVIEW_TEST_ID && (
+			get_option( 'disable_webhooks_' . CHECKVIEW_TEST_ID ) === 'true'
+			|| get_option( 'disable_actions_' . CHECKVIEW_TEST_ID ) === 'true'
 		) ) {
 			return false;
 		}
@@ -929,9 +1114,9 @@ class Checkview_Woo_Automated_Testing {
 	 *
 	 * Marker, NOT predicate: this matches the durable CheckView marker
 	 * (`payment_method = 'checkview'` or `payment_made_by = 'checkview'` meta)
-	 * rather than `cv_is_suppressible_test_order()`. That predicate also
+	 * rather than `checkview_is_suppressible_test_order()`. That predicate also
 	 * requires the per-test `disable_*_<uuid>` option, which
-	 * `complete_checkview_test()` deletes at the END of the test request —
+	 * `checkview_complete_test()` deletes at the END of the test request —
 	 * long before an async REST poll (a separate, later request) arrives. The
 	 * marker is stamped at order creation (`checkview_stamp_order_meta`,
 	 * `woocommerce_new_order @ STAMP_PRIORITY`) and persists until the cleanup
@@ -956,7 +1141,7 @@ class Checkview_Woo_Automated_Testing {
 	 * @param \WP_REST_Request $request The REST request (unused).
 	 * @return array Modified query args.
 	 */
-	public function checkview_exclude_test_orders_from_rest( $args, $request ) {
+	public function checkview_exclude_test_orders_from_rest( $args, $request ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 		if ( get_option( 'cv_suppression_kill_switch' ) === 'true' ) {
 			return $args;
 		}
@@ -975,7 +1160,7 @@ class Checkview_Woo_Automated_Testing {
 		// this way). Setting both makes the exclusion work on either backend —
 		// the key the active backend ignores is harmless.
 		foreach ( array( 'post__not_in', 'exclude' ) as $exclude_key ) {
-			$existing            = ( isset( $args[ $exclude_key ] ) && is_array( $args[ $exclude_key ] ) ) ? $args[ $exclude_key ] : array();
+			$existing             = ( isset( $args[ $exclude_key ] ) && is_array( $args[ $exclude_key ] ) ) ? $args[ $exclude_key ] : array();
 			$args[ $exclude_key ] = array_values( array_unique( array_merge( $existing, $ids ) ) );
 		}
 
@@ -1056,11 +1241,11 @@ class Checkview_Woo_Automated_Testing {
 	 * We additionally filter `mailchimp_allowed_to_use_cookie => false`, which
 	 * IS a real MC filter and blocks the browser-side tracking-cookie path.
 	 *
-	 * Option gate (mirrors `cv_is_suppressible_test_order`): only engage when
+	 * Option gate (mirrors `checkview_is_suppressible_test_order`): only engage when
 	 * the SaaS sent `disable_actions=true` or `disable_webhooks=true` for this
 	 * test, so tests that intentionally exercise the integration are untouched.
 	 * Honors the incident kill switch (`cv_suppression_kill_switch`). Only
-	 * engages when CV_TEST_ID is defined — real customer requests never reach
+	 * engages when CHECKVIEW_TEST_ID is defined — real customer requests never reach
 	 * this branch.
 	 *
 	 * @since 2.0.34
@@ -1068,14 +1253,14 @@ class Checkview_Woo_Automated_Testing {
 	 * @return void
 	 */
 	public function checkview_mailchimp_killswitch() {
-		if ( ! defined( 'CV_TEST_ID' ) || ! CV_TEST_ID ) {
+		if ( ! defined( 'CHECKVIEW_TEST_ID' ) || ! CHECKVIEW_TEST_ID ) {
 			return;
 		}
 		if ( get_option( 'cv_suppression_kill_switch' ) === 'true' ) {
 			return;
 		}
-		$suppress = ( get_option( 'disable_actions_' . CV_TEST_ID ) === 'true' )
-				|| ( get_option( 'disable_webhooks_' . CV_TEST_ID ) === 'true' );
+		$suppress = ( get_option( 'disable_actions_' . CHECKVIEW_TEST_ID ) === 'true' )
+				|| ( get_option( 'disable_webhooks_' . CHECKVIEW_TEST_ID ) === 'true' );
 		if ( ! $suppress ) {
 			return;
 		}
@@ -1175,7 +1360,7 @@ class Checkview_Woo_Automated_Testing {
 
 		Checkview_Admin_Logs::add(
 			'ip-logs',
-			'Mailchimp kill-switch: removed ' . count( $targets ) . ' MailChimp_Service hook callback(s) for test [' . CV_TEST_ID . '].'
+			'Mailchimp kill-switch: removed ' . count( $targets ) . ' MailChimp_Service hook callback(s) for test [' . CHECKVIEW_TEST_ID . '].'
 		);
 	}
 
@@ -1189,7 +1374,7 @@ class Checkview_Woo_Automated_Testing {
 	 * REST/admin order save, catch-up sync). Returning `false` aborts the
 	 * enqueue; any other value falls through unchanged.
 	 *
-	 * Per-order gating via `cv_is_suppressible_test_order()` — same invariant
+	 * Per-order gating via `checkview_is_suppressible_test_order()` — same invariant
 	 * as the WooCommerce webhook filter: the order must carry a valid
 	 * `checkview_test_id` stamp AND its per-test `disable_*_<uuid>` option
 	 * must still be active. Real customer orders always fall through.
@@ -1201,11 +1386,11 @@ class Checkview_Woo_Automated_Testing {
 	 * @return mixed False to block the push, the incoming value otherwise.
 	 */
 	public function checkview_mailchimp_should_push_order( $order_id ) {
-		if ( false === $order_id || ! function_exists( 'cv_is_suppressible_test_order' ) ) {
+		if ( false === $order_id || ! function_exists( 'checkview_is_suppressible_test_order' ) ) {
 			return $order_id;
 		}
 
-		if ( cv_is_suppressible_test_order( $order_id ) ) {
+		if ( checkview_is_suppressible_test_order( $order_id ) ) {
 			Checkview_Admin_Logs::add(
 				'ip-logs',
 				'Mailchimp kill-switch: blocked Single_Order enqueue for test order [' . (int) $order_id . '].'
@@ -1214,6 +1399,192 @@ class Checkview_Woo_Automated_Testing {
 		}
 
 		return $order_id;
+	}
+
+	/**
+	 * MailerLite for WooCommerce kill-switch — strips the plugin's hook
+	 * callbacks for the current CheckView test request.
+	 *
+	 * MailerLite for WooCommerce (`woo-mailerlite`, verified against 3.1.26)
+	 * exposes no per-order or per-request suppression filter. It pushes test
+	 * data to MailerLite from:
+	 *   - `WooMailerLiteService::setCartEmail` (admin-ajax
+	 *     `woo_mailerlite_set_cart_email`, fired as soon as the checkout email
+	 *     is typed) and `handleCheckoutPage`, both calling `sendCart()`;
+	 *   - `WooMailerLiteService::handleCartUpdated` (cart table writes that
+	 *     feed `sendCart()`);
+	 *   - `WooMailerLiteOrderController::handleOrderStatusChanged`
+	 *     (`syncOrder()`, creates the customer/subscriber);
+	 *   - `WooMailerLitePluginController` / `WooMailerLitePublic` (checkout
+	 *     checkbox, public JS that calls the AJAX endpoint, universal.js
+	 *     tracking).
+	 * All are instance callbacks registered via the plugin's loader on
+	 * `plugins_loaded @ 12`, so an instance sweep at `init @ 99` removes them
+	 * before any cart, checkout, AJAX or order event fires.
+	 *
+	 * Option gate mirrors `checkview_mailchimp_killswitch`: only engages when
+	 * the SaaS sent `disable_actions=true` or `disable_webhooks=true` for this
+	 * test. Honors `cv_suppression_kill_switch`.
+	 *
+	 * Test ID source: `CHECKVIEW_TEST_ID` when defined. On admin-ajax requests only,
+	 * falls back to `checkview_get_test_id()` (referer/cookie), because the
+	 * checkout AJAX call may not carry the signed-request header that
+	 * `CheckView::is_bot()` requires. A forged cookie only works while a real
+	 * test's `disable_*_<uuid>` option is active, and only suppresses
+	 * MailerLite for that visitor's own request.
+	 *
+	 * @since 2.5.2
+	 *
+	 * @return void
+	 */
+	public function checkview_mailerlite_killswitch() {
+		if ( ! class_exists( 'WooMailerLite' ) ) {
+			return;
+		}
+
+		$test_id = $this->checkview_mailerlite_suppressed_test_id();
+		if ( ! $test_id ) {
+			return;
+		}
+
+		$removed = $this->checkview_remove_hooks_by_instance(
+			array(
+				'WooMailerLiteService',
+				'WooMailerLiteOrderController',
+				'WooMailerLitePluginController',
+				'WooMailerLitePublic',
+			)
+		);
+
+		Checkview_Admin_Logs::add(
+			'ip-logs',
+			'MailerLite kill-switch: removed ' . $removed . ' woo-mailerlite hook callback(s) for test [' . $test_id . '].'
+		);
+	}
+
+	/**
+	 * Returns the active CheckView test ID when MailerLite should be
+	 * suppressed for the current request, false otherwise.
+	 *
+	 * @since 2.5.2
+	 *
+	 * @return string|false
+	 */
+	private function checkview_mailerlite_suppressed_test_id() {
+		if ( get_option( 'cv_suppression_kill_switch' ) === 'true' ) {
+			return false;
+		}
+
+		$test_id = false;
+		if ( defined( 'CHECKVIEW_TEST_ID' ) && CHECKVIEW_TEST_ID ) {
+			$test_id = CHECKVIEW_TEST_ID;
+		} elseif ( wp_doing_ajax() && function_exists( 'checkview_get_test_id' ) ) {
+			$test_id = checkview_get_test_id();
+		}
+
+		if ( ! $test_id ) {
+			return false;
+		}
+
+		$suppress = ( get_option( 'disable_actions_' . $test_id ) === 'true' )
+				|| ( get_option( 'disable_webhooks_' . $test_id ) === 'true' );
+
+		return $suppress ? $test_id : false;
+	}
+
+	/**
+	 * Removes every registered hook callback whose object is an instance of
+	 * one of the given classes. Collect-then-remove so `$wp_filter` is never
+	 * mutated mid-iteration. Absent classes are skipped.
+	 *
+	 * @since 2.5.2
+	 *
+	 * @param string[] $class_names Class names to match.
+	 * @return int Number of callbacks removed.
+	 */
+	private function checkview_remove_hooks_by_instance( array $class_names ) {
+		$class_names = array_values( array_filter( $class_names, 'class_exists' ) );
+		if ( empty( $class_names ) ) {
+			return 0;
+		}
+
+		global $wp_filter;
+		$targets = array();
+
+		foreach ( $wp_filter as $hook_name => $hook ) {
+			if ( ! ( $hook instanceof WP_Hook ) ) {
+				continue;
+			}
+			foreach ( $hook->callbacks as $priority => $callbacks ) {
+				foreach ( $callbacks as $cb ) {
+					$fn = isset( $cb['function'] ) ? $cb['function'] : null;
+					if ( ! is_array( $fn ) || ! isset( $fn[0] ) || ! is_object( $fn[0] ) ) {
+						continue;
+					}
+					foreach ( $class_names as $class_name ) {
+						if ( $fn[0] instanceof $class_name ) {
+							$targets[] = array( $hook_name, $fn, $priority );
+							break;
+						}
+					}
+				}
+			}
+		}
+
+		foreach ( $targets as $target ) {
+			remove_action( $target[0], $target[1], $target[2] );
+		}
+
+		return count( $targets );
+	}
+
+	/**
+	 * Blocks MailerLite for WooCommerce from syncing CheckView test orders.
+	 *
+	 * `WooMailerLiteOrderController::handleOrderStatusChanged` returns early
+	 * when the transient `woo_mailerlite_order_sent:<order_id>` is set (the
+	 * plugin's own dedupe, written via `WooMailerLiteCache`). Setting it for
+	 * test orders covers status changes outside the test request (gateway
+	 * callbacks, cron, admin edits), which the per-request kill-switch never
+	 * sees. Stamped while the test is still active (order creation/save), so
+	 * the block outlives `checkview_complete_test()` deleting the
+	 * `disable_*_<uuid>` options.
+	 *
+	 * Relies on an internal plugin key. If MailerLite renames it, this fails
+	 * open (orders sync, no error).
+	 *
+	 * @since 2.5.2
+	 *
+	 * @param int|WC_Order $order Order ID or order object, depending on hook.
+	 * @return void
+	 */
+	public function checkview_mailerlite_block_order_sync( $order ) {
+		if ( ! class_exists( 'WooMailerLite' ) || ! function_exists( 'checkview_is_suppressible_test_order' ) ) {
+			return;
+		}
+		// Cleanup cron deletes test orders; deletion fires save hooks.
+		if ( doing_action( 'checkview_delete_orders_action' ) ) {
+			return;
+		}
+
+		// Cheap meta check first: `woocommerce_after_order_object_save` fires
+		// on every save of every order, real customers included.
+		if ( ! checkview_is_suppressible_test_order( $order ) ) {
+			return;
+		}
+
+		$order_id  = is_object( $order ) ? (int) $order->get_id() : (int) $order;
+		$transient = 'woo_mailerlite_order_sent:' . $order_id;
+		if ( get_transient( $transient ) ) {
+			return;
+		}
+
+		set_transient( $transient, true, DAY_IN_SECONDS );
+
+		Checkview_Admin_Logs::add(
+			'ip-logs',
+			'MailerLite kill-switch: blocked order sync for test order [' . $order_id . '].'
+		);
 	}
 
 	/**
@@ -1302,10 +1673,12 @@ class Checkview_Woo_Automated_Testing {
 		if ( '' !== $order_id && (int) $order_id > 0 ) {
 			$orders = array( (int) $order_id );
 		} elseif ( function_exists( 'wc_get_orders' ) ) {
-			$args = array(
+			$args   = array(
 				'limit'        => -1,
 				'type'         => 'shop_order',
+				// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- Test order cleanup cron only.
 				'meta_key'     => 'payment_made_by', // Postmeta key field.
+				// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value -- Test order cleanup cron only.
 				'meta_value'   => 'checkview',       // Postmeta value field.
 				'meta_compare' => '=',
 				'return'       => 'ids',
@@ -1365,7 +1738,7 @@ class Checkview_Woo_Automated_Testing {
 								require_once ABSPATH . 'wp-admin/includes/user.php';
 							}
 
-							$res = $customer->delete( true );
+							$res      = $customer->delete( true );
 							$customer = null;
 						}
 					}
@@ -1374,12 +1747,11 @@ class Checkview_Woo_Automated_Testing {
 						require_once CHECKVIEW_ADMIN_DIR . '/class-checkview-admin-logs.php';
 					}
 
-					if ($order_object) {
+					if ( $order_object ) {
 						Checkview_Admin_Logs::add( 'cron-logs', 'Failed to delete CheckView order [' . $order_object->get_id() . '] from the database.' );
 					} else {
 						Checkview_Admin_Logs::add( 'cron-logs', 'Failed to delete CheckView order from the database.' );
 					}
-
 				}
 			}
 
@@ -1393,7 +1765,7 @@ class Checkview_Woo_Automated_Testing {
 	 *
 	 * H1 (round 7): split out from the original combined
 	 * `checkview_add_custom_fields_after_purchase`. This function ONLY stamps
-	 * meta; it does NOT call `complete_checkview_test()` or schedule cleanup.
+	 * meta; it does NOT call `checkview_complete_test()` or schedule cleanup.
 	 *
 	 * Hooked on TWO actions, both at STAMP_PRIORITY:
 	 *   - `woocommerce_new_order` — the original H1 hook, fires when a Woo
@@ -1417,7 +1789,7 @@ class Checkview_Woo_Automated_Testing {
 	 *
 	 * Round-7 hardening: the original function trusted `$_COOKIE['checkview_test_id']`
 	 * alone — a real customer with a stale 110-min cookie would have had their
-	 * order incorrectly stamped. This version uses the per-request `CV_TEST_ID`
+	 * order incorrectly stamped. This version uses the per-request `CHECKVIEW_TEST_ID`
 	 * constant (defined by `checkview_init_current_test()` after `is_bot()`
 	 * passes IP whitelist + query param validation), which cannot leak to a
 	 * real customer's request.
@@ -1436,11 +1808,11 @@ class Checkview_Woo_Automated_Testing {
 	 * @return void
 	 */
 	public function checkview_stamp_order_meta( $order_id ) {
-		if ( ! defined( 'CV_TEST_ID' ) || ! CV_TEST_ID ) {
-			return; // not a CheckView test request
+		if ( ! defined( 'CHECKVIEW_TEST_ID' ) || ! CHECKVIEW_TEST_ID ) {
+			return; // Not a CheckView test request.
 		}
 		if ( ! function_exists( 'wc_get_order' ) ) {
-			return; // WC not loaded; bail safely
+			return; // WC not loaded; bail safely.
 		}
 		// Don't stamp orders that are being torn down by the cleanup cron —
 		// `$order->delete()` fires save() hooks during the delete sequence,
@@ -1461,7 +1833,6 @@ class Checkview_Woo_Automated_Testing {
 		}
 		$in_progress[ $order_id ] = true;
 		try {
-
 			$order = wc_get_order( $order_id );
 			if ( ! $order ) {
 				return;
@@ -1475,11 +1846,10 @@ class Checkview_Woo_Automated_Testing {
 			}
 
 			$order->update_meta_data( 'payment_made_by', 'checkview' );
-			$order->update_meta_data( CheckView::PARAM_TEST_ID, CV_TEST_ID );
+			$order->update_meta_data( CheckView::PARAM_TEST_ID, CHECKVIEW_TEST_ID );
 			$order->save();
 
-			Checkview_Admin_Logs::add( 'ip-logs', 'Stamped CheckView meta on order [' . $order->get_id() . '] for test [' . CV_TEST_ID . '].' );
-
+			Checkview_Admin_Logs::add( 'ip-logs', 'Stamped CheckView meta on order [' . $order->get_id() . '] for test [' . CHECKVIEW_TEST_ID . '].' );
 		} finally {
 			unset( $in_progress[ $order_id ] );
 		}
@@ -1489,7 +1859,7 @@ class Checkview_Woo_Automated_Testing {
 	 * Adapter for `woocommerce_after_order_object_save` — that hook passes
 	 * the order object; our canonical stamper takes an order ID. Hook fires
 	 * on every order save (HPOS + legacy), so this resolves to a no-op
-	 * outside CheckView test requests via the stamper's CV_TEST_ID guard.
+	 * outside CheckView test requests via the stamper's CHECKVIEW_TEST_ID guard.
 	 *
 	 * The action name is `woocommerce_after_<object_type>_object_save` and
 	 * resolves to `woocommerce_after_order_object_save` for WC_Order only —
@@ -1518,7 +1888,7 @@ class Checkview_Woo_Automated_Testing {
 	 * behaviour for backwards compatibility).
 	 *
 	 * Verifies the order's `checkview_test_id` meta matches the current request's
-	 * `CV_TEST_ID` to prevent incorrectly scheduling cleanup for orders that
+	 * `CHECKVIEW_TEST_ID` to prevent incorrectly scheduling cleanup for orders that
 	 * weren't stamped by THIS test (e.g. cross-test status changes during
 	 * concurrent runs, or admin manual transitions on stale stamped orders).
 	 *
@@ -1529,28 +1899,28 @@ class Checkview_Woo_Automated_Testing {
 	 * @param string $new_status Order's new status.
 	 * @return void
 	 */
-	public function checkview_schedule_order_cleanup( $order_id, $old_status, $new_status ) {
-		if ( ! defined( 'CV_TEST_ID' ) || ! CV_TEST_ID ) {
-			return; // not a test request
+	public function checkview_schedule_order_cleanup( $order_id, $old_status, $new_status ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
+		if ( ! defined( 'CHECKVIEW_TEST_ID' ) || ! CHECKVIEW_TEST_ID ) {
+			return; // Not a test request.
 		}
 		if ( ! function_exists( 'wc_get_order' ) ) {
 			return;
 		}
 
 		$order = wc_get_order( $order_id );
-		if ( ! $order || $order->get_meta( CheckView::PARAM_TEST_ID ) !== CV_TEST_ID ) {
-			return; // not OUR test order
+		if ( ! $order || $order->get_meta( CheckView::PARAM_TEST_ID ) !== CHECKVIEW_TEST_ID ) {
+			return; // Not OUR test order.
 		}
 
 		checkview_schedule_delete_orders( $order_id );
 	}
 
 	/**
-	 * Calls `complete_checkview_test()` at shutdown of the request that
+	 * Calls `checkview_complete_test()` at shutdown of the request that
 	 * actually completes a test order, cleaning up per-test options + session.
 	 *
 	 * Why gated on completion `did_action`:
-	 *   The previous unconditional behavior fired `complete_checkview_test`
+	 *   The previous unconditional behavior fired `checkview_complete_test`
 	 *   at the shutdown of EVERY test-bearing request — including the very
 	 *   first navigation that wrote the `disable_webhooks_<uuid>` /
 	 *   `disable_actions_<uuid>` options. That immediately deleted them.
@@ -1567,7 +1937,7 @@ class Checkview_Woo_Automated_Testing {
 	 *   that placed the order.
 	 *
 	 * Form helpers (CF7, GF, NF, WPForms, FluentForms, WSF, Formidable,
-	 * Forminator, Everest) call `complete_checkview_test()` synchronously
+	 * Forminator, Everest) call `checkview_complete_test()` synchronously
 	 * inside their submission hooks and don't depend on this shutdown path
 	 * — gating to Woo completion actions doesn't affect form-test cleanup.
 	 *
@@ -1591,8 +1961,8 @@ class Checkview_Woo_Automated_Testing {
 	 * @return void
 	 */
 	public function checkview_complete_test_deferred() {
-		if ( ! defined( 'CV_TEST_ID' ) || ! CV_TEST_ID ) {
-			return; // not a test request — don't delete options with empty key
+		if ( ! defined( 'CHECKVIEW_TEST_ID' ) || ! CHECKVIEW_TEST_ID ) {
+			return; // Not a test request — don't delete options with empty key.
 		}
 
 		$completion_fired = did_action( 'woocommerce_new_order' )
@@ -1604,12 +1974,12 @@ class Checkview_Woo_Automated_Testing {
 		if ( ! $completion_fired ) {
 			Checkview_Admin_Logs::add(
 				'ip-logs',
-				'Shutdown cleanup skipped for ' . CV_TEST_ID . ' — no order completion this request'
+				'Shutdown cleanup skipped for ' . CHECKVIEW_TEST_ID . ' — no order completion this request'
 			);
 			return;
 		}
 
-		complete_checkview_test( CV_TEST_ID );
+		checkview_complete_test( CHECKVIEW_TEST_ID );
 	}
 
 	/**
@@ -1646,7 +2016,7 @@ class Checkview_Woo_Automated_Testing {
 	 * @param WC_Order_Item $item Item in order.
 	 * @param int           $quantity Quaniity of item.
 	 */
-	public function checkview_woocommerce_prevent_adjust_line_item_product_stock( $prevent, $item, $quantity ) {
+	public function checkview_woocommerce_prevent_adjust_line_item_product_stock( $prevent, $item, $quantity ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 		// Get order.
 		$order         = $item->get_order();
 		$billing_email = $order->get_billing_email();

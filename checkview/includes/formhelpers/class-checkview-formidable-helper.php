@@ -41,7 +41,7 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 		public function __construct() {
 			$this->loader = new Checkview_Loader();
 
-			if ( defined( 'TEST_EMAIL' ) ) {
+			if ( defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
 				// update email to our test email.
 				add_filter(
 					'frm_to_email',
@@ -114,6 +114,88 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 				'__return_false'
 			);
 
+			/*
+			 * Anti-spam bypass, precise layer.
+			 *
+			 * Formidable's spam pipeline (FrmEntryValidate::spam_check) has
+			 * eight independent gates. Only the honeypot (above) and the
+			 * captcha field type (frm_fields_to_validate) were handled. Each
+			 * filter below is the documented switch for one gate, verified
+			 * against Formidable 6.33.1:
+			 *
+			 *   frm_run_antispam    FrmAntiSpam::run_antispam() — the token
+			 *                       check. Fails closed when the token is
+			 *                       missing, which happens on a stale cached
+			 *                       page (tokens are only valid +/- 2 days) or
+			 *                       when the form is rendered without its JS.
+			 *   frm_check_blacklist FrmSpamCheckWPDisallowedWords::is_enabled()
+			 *                       — the only gate that is ALWAYS on. It runs
+			 *                       wp_check_comment_disallowed_list() over the
+			 *                       entry content, the submitting IP and the
+			 *                       user agent whenever WordPress's own
+			 *                       disallowed_keys option is non-empty, which
+			 *                       security plugins routinely populate.
+			 *   frm_check_denylist  FrmSpamCheckDenylist::is_enabled() — the
+			 *                       Formidable denylist (words, emails, IPs).
+			 *
+			 * StopForumSpam and the WP-comment-spam check have no enable
+			 * filter, and Formidable's Akismet path reads
+			 * get_option( 'wordpress_api_key' ) directly rather than going
+			 * through `akismet_get_api_key` above — so neither is reachable
+			 * from here. Those are caught by the frm_validate_entry backstop
+			 * instead.
+			 */
+			add_filter( 'frm_run_antispam', '__return_false', PHP_INT_MAX );
+			add_filter( 'frm_check_blacklist', '__return_false', PHP_INT_MAX );
+			add_filter( 'frm_check_denylist', '__return_false', PHP_INT_MAX );
+
+			// Bypass hCaptcha. Formidable's own hCaptcha support is the
+			// `captcha` field type already stripped by
+			// remove_recaptcha_field_from_list(), but the standalone
+			// "hCaptcha for WordPress" plugin ships its own Formidable
+			// integration that operates outside that field type. Matches the
+			// GF, WPForms, CF7, Fluent, Everest and Elementor helpers.
+			add_filter( 'hcap_activate', '__return_false' );
+
+			// Third-party anti-spam plugins that attach their failure to a key
+			// other than `spam`, which the frm_validate_entry backstop below
+			// cannot clear. Registered on `init` at PHP_INT_MAX because WP Armour
+			// includes its integrations from an `init` callback at the DEFAULT
+			// priority (wp-armour.php:17-24), i.e. the same priority this helper
+			// is loaded at — so ordering between the two would otherwise depend
+			// on registration order.
+			add_action(
+				'init',
+				array(
+					$this,
+					'checkview_unhook_third_party_spam_filters',
+				),
+				PHP_INT_MAX
+			);
+
+			// Anti-spam bypass, backstop layer.
+			//
+			// Single choke point: frm_validate_entry fires AFTER spam_check()
+			// and its return value replaces the error array
+			// (FrmEntryValidate::validate). Clearing $errors['spam'] here
+			// therefore neutralises every gate at once, including the three
+			// that have no filter of their own. Runs at PHP_INT_MAX so it lands
+			// after any third-party callback that might add a spam verdict.
+			//
+			// Both layers are kept deliberately. The filters above are precise
+			// but fail silently if Formidable renames one; this backstop still
+			// catches the resulting error. Same belt-and-braces shape as the GF
+			// helper's explicit reCAPTCHA unhook plus its marker fallback.
+			add_filter(
+				'frm_validate_entry',
+				array(
+					$this,
+					'checkview_bypass_spam_validation',
+				),
+				PHP_INT_MAX,
+				1
+			);
+
 			// Disbale form action.
 			add_filter(
 				'frm_custom_trigger_action',
@@ -124,6 +206,23 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 				99,
 				5
 			);
+
+			// CleanTalk Spam Protect reaches Formidable on two paths:
+			// `frm_entries_before_create` at priority 999999 (cleantalk.php:598),
+			// and `ct_ajax_hook` at priority 1 on
+			// wp_ajax[_nopriv]_frm_entries_create (inc/cleantalk-ajax.php:78-79),
+			// which is the path a normal AJAX-submitted Formidable form takes.
+			// Both funnel into apbct_base_call(), which short-circuits on this
+			// sentinel and returns a default response whose `allow` is 1
+			// (inc/cleantalk-common.php:110-124, CleantalkResponse.php:154), so
+			// neither path blocks. One lever covers both, with no coupling to
+			// CleanTalk's hook list or priorities.
+			//
+			// Same two lines the GF and Forminator helpers use. CAVEAT: this is
+			// an INTERNAL global, not a public API, so re-verify on CleanTalk
+			// updates. Harmless when CleanTalk is not installed.
+			global $cleantalk_executed; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- CleanTalk-owned global.
+			$cleantalk_executed = true; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- CleanTalk-owned global.
 		}
 		/**
 		 * Sets our email for test submissions.
@@ -133,21 +232,21 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 		 */
 		public function checkview_inject_email( $email ) {
 			// New: append-mode branch — deliver to BOTH real recipient and test inbox.
-			if ( cv_should_allow_original_recipients() ) {
+			if ( checkview_should_allow_original_recipients() ) {
 				$email = is_array( $email )
-					? cv_append_test_email_array( $email )
-					: cv_append_test_email_string( $email );
+					? checkview_append_test_email_array( $email )
+					: checkview_append_test_email_string( $email );
 				Checkview_Admin_Logs::add( 'ip-logs', 'Append-mode submission recipient email address: ' . wp_json_encode( $email ) );
 				return $email;
 			}
 
-			$cv_test_id = get_checkview_test_id();
-			if ( ! $cv_test_id || 'true' != get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
-				$email = TEST_EMAIL;
+			$cv_test_id = checkview_get_test_id();
+			if ( ! $cv_test_id || 'true' !== get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
+				$email = CHECKVIEW_TEST_EMAIL;
 			} elseif ( is_array( $email ) ) {
-				$email[] = TEST_EMAIL;
+				$email[] = CHECKVIEW_TEST_EMAIL;
 			} else {
-				$email .= ', ' . TEST_EMAIL;
+				$email .= ', ' . CHECKVIEW_TEST_EMAIL;
 			}
 
 			Checkview_Admin_Logs::add( 'ip-logs', 'Submission recipient email address: ' . wp_json_encode( $email ) );
@@ -160,19 +259,19 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 		 * @param array $atts attributes.
 		 * @return array
 		 */
-		public function checkview_remove_email_header( array $headers, array $atts ): array {
-			$append_mode = cv_should_allow_original_recipients();
+		public function checkview_remove_email_header( array $headers, array $atts ): array { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
+			$append_mode = checkview_should_allow_original_recipients();
 
 			// Append-mode: preserve original CC/BCC so customer's full recipient
 			// list receives the email. Inject Reply-To for MTA-variance defense.
 			if ( $append_mode ) {
-				$headers = cv_inject_reply_to_header( $headers );
+				$headers = checkview_inject_reply_to_header( $headers );
 				Checkview_Admin_Logs::add( 'ip-logs', 'Append-mode submission email headers (CC/BCC preserved): ' . wp_json_encode( $headers ) );
 				return $headers;
 			}
 
-			$cv_test_id = get_checkview_test_id();
-			if ( $cv_test_id && 'true' == get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
+			$cv_test_id = checkview_get_test_id();
+			if ( $cv_test_id && 'true' === get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
 				return $headers;
 			}
 			// Ensure headers are an array.
@@ -192,13 +291,15 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 			Checkview_Admin_Logs::add( 'ip-logs', 'Submission email headers: ' . wp_json_encode( $array_values ) );
 			return $array_values;
 		}
+
 		/**
 		 * Stores the test results and finishes the testing session.
 		 *
 		 * Deletes test submission from Formidable database table.
 		 *
-		 * @param int $entry_id Form's ID.
-		 * @param int $form_id Form entry ID.
+		 * @param int   $entry_id Form entry ID.
+		 * @param int   $form_id Form's ID.
+		 * @param array $args Hook args. is_child set for repeater/embedded child entries.
 		 * @return void
 		 */
 		public function checkview_log_form_test_entry( $entry_id, $form_id, $args = array() ) {
@@ -228,7 +329,7 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 			// and embedded-form child entries, passing compact( 'is_child' )
 			// (FrmEntry::after_entry_created_actions). Without this guard a form
 			// with a repeater cloned one cv_entry row per child AND called
-			// complete_checkview_test() on the first of them — tearing the
+			// checkview_complete_test() on the first of them — tearing the
 			// session down before the parent entry was ever cloned, which
 			// surfaces to the SaaS as submission-not-found.
 			if ( ! empty( $args['is_child'] ) ) {
@@ -252,7 +353,7 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 			// Idempotence: guards against this handler running twice for the
 			// same entry within one request (a second helper instance, or a
 			// plugin re-firing the action). A repeat would insert a duplicate
-			// cv_entry row and call complete_checkview_test() again after the
+			// cv_entry row and call checkview_complete_test() again after the
 			// session was already torn down. Mirrors the guard in
 			// Checkview_Fluent_Forms_Helper::checkview_clone_fluentform_entry().
 			static $processed = array();
@@ -265,25 +366,25 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 
 			Checkview_Admin_Logs::add( 'ip-logs', 'Cloning submission entry [' . $entry_id . ']...' );
 
-			$checkview_test_id = get_checkview_test_id();
+			$checkview_test_id = checkview_get_test_id();
 
 			if ( empty( $checkview_test_id ) ) {
 				$checkview_test_id = $form_id . gmdate( 'Ymd' );
 			}
 
 			// Insert entry.
-			$entry_data = array(
-				'form_id' => $form_id,
-				'status' => 'publish',
-				'source_url' => isset( $_SERVER['HTTP_REFERER'] ) ? substr( sanitize_url( wp_unslash( $_SERVER['HTTP_REFERER'] ) ), 0, 200 ) : '',
+			$entry_data  = array(
+				'form_id'      => $form_id,
+				'status'       => 'publish',
+				'source_url'   => isset( $_SERVER['HTTP_REFERER'] ) ? substr( sanitize_url( wp_unslash( $_SERVER['HTTP_REFERER'] ) ), 0, 200 ) : '',
 				'date_created' => current_time( 'mysql' ),
 				'date_updated' => current_time( 'mysql' ),
-				'uid' => $checkview_test_id,
-				'form_type' => 'Formidable',
+				'uid'          => $checkview_test_id,
+				'form_type'    => 'Formidable',
 			);
 			$entry_table = $wpdb->prefix . 'cv_entry';
 
-			$result  = $wpdb->insert( $entry_table, $entry_data );
+			$result = $wpdb->insert( $entry_table, $entry_data );
 
 			if ( ! $result ) {
 				Checkview_Admin_Logs::add( 'ip-logs', 'Failed to clone submission entry data. wpdb->last_error=[' . $wpdb->last_error . ']' );
@@ -293,15 +394,15 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 
 			// Skip meta loop when parent insert failed: $wpdb->insert_id
 			// is 0, meta rows would be orphaned with entry_id=0.
-			// Formidable entry delete and complete_checkview_test() below still run.
+			// Formidable entry delete and checkview_complete_test() below still run.
 			if ( $result ) {
 				// Insert entry meta.
 				$entry_meta_table = $wpdb->prefix . 'cv_entry_meta';
-				$fields = $this->get_form_fields( $form_id );
+				$fields           = $this->get_form_fields( $form_id );
 
 				// Previously `return`ed here. That exited the whole method,
 				// skipping BOTH the Formidable entry delete and
-				// complete_checkview_test() below — leaving the test submission
+				// checkview_complete_test() below — leaving the test submission
 				// in the customer's database and hanging the test until it timed
 				// out. It also contradicted the comment directly above, which
 				// states that cleanup still runs.
@@ -314,9 +415,9 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 					$fields = array();
 				}
 
-				$tablename = $wpdb->prefix . 'frm_item_metas';
-				$form_fields = $wpdb->get_results( $wpdb->prepare( 'Select * from ' . $tablename . ' where item_id=%d', $entry_id ) );
-				$count = 0;
+				$tablename   = $wpdb->prefix . 'frm_item_metas';
+				$form_fields = $wpdb->get_results( $wpdb->prepare( 'Select * from %i where item_id=%d', $tablename, $entry_id ) );
+				$count       = 0;
 
 				foreach ( $form_fields as $field ) {
 					if ( empty( $field->field_id ) ) {
@@ -360,47 +461,53 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 
 								// First.
 								$entry_metadata = array(
-									'uid' => $checkview_test_id,
-									'form_id' => $form_id,
-									'entry_id' => $entry_id,
-									'meta_key' => $sub_fields[0]['field_id'],
+									'uid'        => $checkview_test_id,
+									'form_id'    => $form_id,
+									'entry_id'   => $entry_id,
+									// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
+									'meta_key'   => $sub_fields[0]['field_id'],
 									'meta_value' => $first,
+									// phpcs:enable WordPress.DB.SlowDBQuery
 								);
 
 								$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 								if ( $result ) {
-									$count++;
+									++$count;
 								}
 
 								// Middle.
 								$entry_metadata = array(
-									'uid' => $checkview_test_id,
-									'form_id' => $form_id,
-									'entry_id' => $entry_id,
-									'meta_key' => $sub_fields[1]['field_id'],
+									'uid'        => $checkview_test_id,
+									'form_id'    => $form_id,
+									'entry_id'   => $entry_id,
+									// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
+									'meta_key'   => $sub_fields[1]['field_id'],
 									'meta_value' => $middle,
+									// phpcs:enable WordPress.DB.SlowDBQuery
 								);
 
 								$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 								if ( $result ) {
-									$count++;
+									++$count;
 								}
 
 								// Last.
 								$entry_metadata = array(
-									'uid' => $checkview_test_id,
-									'form_id' => $form_id,
-									'entry_id' => $entry_id,
-									'meta_key' => $sub_fields[2]['field_id'],
+									'uid'        => $checkview_test_id,
+									'form_id'    => $form_id,
+									'entry_id'   => $entry_id,
+									// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
+									'meta_key'   => $sub_fields[2]['field_id'],
 									'meta_value' => $last,
+									// phpcs:enable WordPress.DB.SlowDBQuery
 								);
 
 								$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 								if ( $result ) {
-									$count++;
+									++$count;
 								}
 
 								break;
@@ -412,32 +519,36 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 
 								// First.
 								$entry_metadata = array(
-									'uid' => $checkview_test_id,
-									'form_id' => $form_id,
-									'entry_id' => $entry_id,
-									'meta_key' => $sub_fields[0]['field_id'],
+									'uid'        => $checkview_test_id,
+									'form_id'    => $form_id,
+									'entry_id'   => $entry_id,
+									// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
+									'meta_key'   => $sub_fields[0]['field_id'],
 									'meta_value' => $first,
+									// phpcs:enable WordPress.DB.SlowDBQuery
 								);
 
 								$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 								if ( $result ) {
-									$count++;
+									++$count;
 								}
 
 								// Last.
 								$entry_metadata = array(
-									'uid' => $checkview_test_id,
-									'form_id' => $form_id,
-									'entry_id' => $entry_id,
-									'meta_key' => $sub_fields[1]['field_id'],
+									'uid'        => $checkview_test_id,
+									'form_id'    => $form_id,
+									'entry_id'   => $entry_id,
+									// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
+									'meta_key'   => $sub_fields[1]['field_id'],
 									'meta_value' => $last,
+									// phpcs:enable WordPress.DB.SlowDBQuery
 								);
 
 								$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 								if ( $result ) {
-									$count++;
+									++$count;
 								}
 
 								break;
@@ -449,32 +560,36 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 
 								// First.
 								$entry_metadata = array(
-									'uid' => $checkview_test_id,
-									'form_id' => $form_id,
-									'entry_id' => $entry_id,
-									'meta_key' => $sub_fields[1]['field_id'],
+									'uid'        => $checkview_test_id,
+									'form_id'    => $form_id,
+									'entry_id'   => $entry_id,
+									// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
+									'meta_key'   => $sub_fields[1]['field_id'],
 									'meta_value' => $first,
+									// phpcs:enable WordPress.DB.SlowDBQuery
 								);
 
 								$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 								if ( $result ) {
-									$count++;
+									++$count;
 								}
 
 								// Last.
 								$entry_metadata = array(
-									'uid' => $checkview_test_id,
-									'form_id' => $form_id,
-									'entry_id' => $entry_id,
-									'meta_key' => $sub_fields[0]['field_id'],
+									'uid'        => $checkview_test_id,
+									'form_id'    => $form_id,
+									'entry_id'   => $entry_id,
+									// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
+									'meta_key'   => $sub_fields[0]['field_id'],
 									'meta_value' => $last,
+									// phpcs:enable WordPress.DB.SlowDBQuery
 								);
 
 								$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 								if ( $result ) {
-									$count++;
+									++$count;
 								}
 
 								break;
@@ -483,33 +598,33 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 								break;
 						}
 					} else {
-						$field_value = $field->meta_value;
+						$field_value    = $field->meta_value;
 						$entry_metadata = array(
-							'uid' => $checkview_test_id,
-							'form_id' => $form_id,
-							'entry_id' => $entry_id,
-							'meta_key' => $fields[ $field->field_id ]['field_id'],
+							'uid'        => $checkview_test_id,
+							'form_id'    => $form_id,
+							'entry_id'   => $entry_id,
+							// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
+							'meta_key'   => $fields[ $field->field_id ]['field_id'],
 							'meta_value' => $field_value,
+							// phpcs:enable WordPress.DB.SlowDBQuery
 						);
 
 						$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 						if ( $result ) {
-							$count++;
+							++$count;
 						}
 					}
 				}
 
 				if ( $count > 0 ) {
 					Checkview_Admin_Logs::add( 'ip-logs', 'Cloned submission entry meta data (inserted ' . $count . ' rows into ' . $entry_meta_table . ').' );
-				} else {
+				} elseif ( count( $form_fields ) > 0 && ! empty( $fields ) ) {
 					// `! empty( $fields )` keeps this from reporting a database
 					// failure when the real cause was no field definitions —
 					// that case is logged above with its actual reason and would
 					// otherwise print an empty wpdb->last_error.
-					if ( count( $form_fields ) > 0 && ! empty( $fields ) ) {
-						Checkview_Admin_Logs::add( 'ip-logs', 'Failed to clone submission entry meta data. wpdb->last_error=[' . $wpdb->last_error . ']' );
-					}
+					Checkview_Admin_Logs::add( 'ip-logs', 'Failed to clone submission entry meta data. wpdb->last_error=[' . $wpdb->last_error . ']' );
 				}
 			}
 
@@ -534,12 +649,9 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 				// Placeholders are generated from the row count, never from a
 				// value; every id is still bound through prepare(), and the ids
 				// themselves came from the database as integers.
-				// WPDBPREPARE.
-				$placeholders = implode( ',', array_fill( 0, count( $child_ids ), '%d' ) );
-
 				$wpdb->query(
 					$wpdb->prepare(
-						'DELETE FROM ' . $wpdb->prefix . 'frm_item_metas WHERE item_id IN (' . $placeholders . ')',
+						'DELETE FROM ' . $wpdb->prefix . 'frm_item_metas WHERE item_id IN (' . implode( ',', array_fill( 0, count( $child_ids ), '%d' ) ) . ')',
 						$child_ids
 					)
 				);
@@ -553,7 +665,7 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 			$wpdb->query( $wpdb->prepare( 'DELETE FROM ' . $wpdb->prefix . 'frm_item_metas WHERE item_id=%d', $entry_id ) );
 			$wpdb->query( $wpdb->prepare( 'DELETE FROM ' . $wpdb->prefix . 'frm_items WHERE id=%d', $entry_id ) );
 
-			complete_checkview_test( $checkview_test_id );
+			checkview_complete_test( $checkview_test_id );
 		}
 
 		/**
@@ -567,7 +679,7 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 
 			$fields      = array();
 			$tablename   = $wpdb->prefix . 'frm_fields';
-			$fields_data = $wpdb->get_results( $wpdb->prepare( 'Select * from ' . $tablename . ' where form_id=%d', $form_id ) );
+			$fields_data = $wpdb->get_results( $wpdb->prepare( 'Select * from %i where form_id=%d', $tablename, $form_id ) );
 			if ( ! empty( $fields_data ) && is_array( $fields_data ) ) {
 				foreach ( $fields_data as $field ) {
 					$type     = $field->type;
@@ -627,6 +739,7 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 									if ( is_array( $val ) ) {
 										$field_options[ $key ]['field_id'] = $field_id . '-' . $key;
 									} else {
+										// phpcs:ignore WordPress.PHP.DevelopmentFunctions -- Desired production debug logging.
 										error_log( "Non-array value detected in field_options for field '{$field_id}', key '{$key}': " . print_r( $val, true ) );
 									}
 								}
@@ -649,6 +762,7 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 									if ( is_array( $val ) ) {
 										$field_options[ $key ]['field_id'] = $field_id . '-' . $key;
 									} else {
+										// phpcs:ignore WordPress.PHP.DevelopmentFunctions -- Desired production debug logging.
 										error_log( "Non-array value detected in field_options for field '{$field_id}', key '{$key}': " . print_r( $val, true ) );
 									}
 								}
@@ -683,12 +797,97 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 			return $fields;
 		}
 		/**
+		 * Removes third-party anti-spam callbacks that reject a Formidable
+		 * submission through an error key the spam backstop cannot clear.
+		 *
+		 * `checkview_bypass_spam_validation()` unsets only `$errors['spam']`,
+		 * which is correct for Formidable core — core writes field failures as
+		 * `field<id>` and nonce/permission failures as `form`, and only
+		 * `spam_check()` writes `spam`. Third-party plugins are not bound by that
+		 * convention.
+		 *
+		 * WP Armour is the known case. Its Formidable integration hooks
+		 * `frm_validate_entry` at priority 10 and writes `$errors['my_error']`
+		 * (honeypot/includes/integration/wpa_formidable.php:6-14), so the backstop
+		 * runs after it, sees the key and leaves it — the submission still fails.
+		 *
+		 * It is also likely to fire rather than unlikely: `wpa_check_is_spam()`
+		 * (honeypot/includes/wpa_functions.php:136-152) is fails-closed. It
+		 * returns "not spam" only when the POST carries WP Armour's JS-injected
+		 * `alt_s` and named field, and treats anything else as spam. So the usual
+		 * "a headless browser will not fill a hidden honeypot, therefore it
+		 * passes" reasoning is inverted here and does not apply.
+		 *
+		 * Degrades to a logged no-op: nothing removed and no such function means
+		 * the plugin is absent; the function existing but not removable means it
+		 * moved priority or was renamed, which is worth knowing about.
+		 *
+		 * @since 2.3.1
+		 *
+		 * @return void
+		 */
+		public function checkview_unhook_third_party_spam_filters() {
+			if ( remove_filter( 'frm_validate_entry', 'wpa_formidable_extra_validation', 10 ) ) {
+				Checkview_Admin_Logs::add( 'ip-logs', 'Unhooked WP Armour from frm_validate_entry for this CheckView test.' );
+				return;
+			}
+
+			if ( function_exists( 'wpa_formidable_extra_validation' ) ) {
+				Checkview_Admin_Logs::add( 'ip-logs', 'WP Armour detected but its frm_validate_entry callback was not removable (priority changed or renamed?) — Formidable submissions may still be rejected as spam.' );
+			}
+		}
+
+		/**
+		 * Clears Formidable's spam verdict during a CheckView test.
+		 *
+		 * `frm_validate_entry` is applied after `FrmEntryValidate::spam_check()`
+		 * and its return value replaces the error array, so this is the one
+		 * place that catches every spam gate — including StopForumSpam, the
+		 * WP-comment-spam check and Akismet, none of which expose a filter this
+		 * helper can switch off directly.
+		 *
+		 * Scoping is provable rather than best-effort. Formidable keys genuine
+		 * field failures as `field<id>` (and `field<id>-<name>` for sub-fields),
+		 * nonce/permission failures as `form`, and uses `message`, `trash` and
+		 * `json` elsewhere. `spam` is written only by `spam_check()`. Removing
+		 * that single key therefore cannot suppress a real validation error, so
+		 * a test still fails honestly when the form genuinely rejects the
+		 * submission — the same principle as
+		 * Checkview_Gforms_Helper::checkview_bypass_captcha_validation(), which
+		 * deliberately keeps non-anti-bot failures.
+		 *
+		 * Only ever registered inside a verified test session: the helper is
+		 * loaded from checkview_init_current_test(), which requires is_bot().
+		 *
+		 * @param array $errors Validation errors keyed by field or reason.
+		 * @return array Errors with any spam verdict removed.
+		 */
+		public function checkview_bypass_spam_validation( $errors ) {
+			if ( ! is_array( $errors ) || ! isset( $errors['spam'] ) ) {
+				return $errors;
+			}
+
+			$message = is_string( $errors['spam'] ) ? $errors['spam'] : '';
+			unset( $errors['spam'] );
+
+			// Log the remaining keys so a genuine failure alongside the spam
+			// verdict stays visible in support logs rather than looking like a
+			// clean pass.
+			Checkview_Admin_Logs::add(
+				'ip-logs',
+				'Cleared Formidable spam verdict during CheckView test. Message was [' . substr( $message, 0, 200 ) . ']. Remaining validation errors: [' . ( empty( $errors ) ? 'none' : implode( ', ', array_keys( $errors ) ) ) . '].'
+			);
+
+			return $errors;
+		}
+
+		/**
 		 * Removes ReCAPTCHA field from form fields and form validation.
 		 *
 		 * @param array $fields Array of fields.
 		 * @param array $form Form.
 		 */
-		public function remove_recaptcha_field_from_list( $fields, $form ) {
+		public function remove_recaptcha_field_from_list( $fields, $form ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 
 			foreach ( $fields as $key => $field ) {
 				if ( 'recaptcha' === FrmField::get_field_type( $field ) || 'captcha' === FrmField::get_field_type( $field ) || 'hcaptcha' === FrmField::get_field_type( $field ) || 'turnstile' === FrmField::get_field_type( $field ) ) {
@@ -709,14 +908,41 @@ if ( ! class_exists( 'Checkview_Formidable_Helper' ) ) {
 		 * @param object $form   Form object.
 		 * @param string $event  Event ('create' or 'update').
 		 */
-		function checkview_disable_form_actions( $skip, $action, $entry, $form, $event ) {
-			// Keys to keep.
-			$keys_to_keep = array( 'email', 'register', 'on_submit' );
+		public function checkview_disable_form_actions( $skip, $action, $entry, $form, $event ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
+			// Action types that always run, regardless of `disable_actions`.
+			//
+			// Only the email action. It is what `assert_email_received` depends
+			// on, so a test cannot verify a notification without it.
+			//
+			// `register` was removed. It is the User Registration add-on's slug
+			// (FrmFormActionsController maps 'register' => 'user-registration'),
+			// so keeping it here meant every test on a registration form created
+			// a real WordPress user account — and did so even when the SaaS had
+			// explicitly asked for actions to be disabled, because this
+			// allowlist short-circuits the `disable_actions` check below. It now
+			// honours that flag: skipped when actions are disabled, still run
+			// when the customer opts integrations in.
+			//
+			// Formidable was the only helper keeping a user-creating action.
+			// Gravity Forms returns an empty feed array (dropping User
+			// Registration with everything else), WS Form keeps only
+			// database/message/email, and Fluent Forms keeps only its
+			// `notifications` feed. Note `wppost` (Create WordPress Post) was
+			// already absent from this list, so post creation was disabled while
+			// user creation was not.
+			//
+			// `on_submit` was removed as dead weight, not as a behaviour change.
+			// Formidable core skips that action earlier in the same loop
+			// (FrmFormActionsController: `|| FrmOnSubmitAction::$slug ===
+			// $action->post_excerpt`), so it never reaches this filter.
+			// Confirmation and redirect behaviour is applied at render time, not
+			// through the action trigger.
+			$keys_to_keep = array( 'email' );
 			if ( in_array( $action->post_excerpt, $keys_to_keep, true ) ) {
 				return false;
 			}
-			$cv_test_id = get_checkview_test_id();
-			if ( $cv_test_id && 'true' == get_option( 'disable_actions_' . $cv_test_id, false ) ) {
+			$cv_test_id = checkview_get_test_id();
+			if ( $cv_test_id && 'true' === get_option( 'disable_actions_' . $cv_test_id, false ) ) {
 				Checkview_Admin_Logs::add(
 					'ip-logs',
 					'Disabled Formidable action type [' . ( $action->post_excerpt ?? 'unknown' ) . '] for CheckView test.'

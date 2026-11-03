@@ -163,6 +163,40 @@ if ( ! class_exists( 'Checkview_Elementor_Helper' ) ) {
 				'hcap_activate',
 				'__return_false'
 			);
+
+			// WP Armour calls add_error() on the record rather than flagging the
+			// submission as spam, so the bypasses above never see it.
+			//
+			// On `init` at PHP_INT_MAX because WP Armour includes its
+			// integrations from an `init` callback at the default priority
+			// (wp-armour.php:17-24), the same priority this helper loads at.
+			add_action(
+				'init',
+				array( $this, 'checkview_unhook_wp_armour' ),
+				PHP_INT_MAX
+			);
+		}
+
+		/**
+		 * Removes WP Armour's Elementor Pro forms validation callback.
+		 *
+		 * Degrades to a logged no-op — nothing removed and no such function means
+		 * the plugin is absent; the function present but not removable means it
+		 * changed priority or was renamed, which is worth surfacing.
+		 *
+		 * @since 2.3.0
+		 *
+		 * @return void
+		 */
+		public function checkview_unhook_wp_armour() {
+			if ( remove_action( 'elementor_pro/forms/validation', 'wpa_elementor_extra_validation', 10 ) ) {
+				Checkview_Admin_Logs::add( 'ip-logs', 'Unhooked WP Armour from elementor_pro/forms/validation for this CheckView test.' );
+				return;
+			}
+
+			if ( function_exists( 'wpa_elementor_extra_validation' ) ) {
+				Checkview_Admin_Logs::add( 'ip-logs', 'WP Armour detected but its elementor_pro/forms/validation callback was not removable (priority changed or renamed?) — Elementor submissions may still be rejected as spam.' );
+			}
 		}
 
 		/**
@@ -184,7 +218,7 @@ if ( ! class_exists( 'Checkview_Elementor_Helper' ) ) {
 		public function checkview_capture_submission_watermark( $record, $handler ) {
 			global $wpdb;
 
-			// Deliberately NOT gated on get_checkview_test_id(): cleanup in
+			// Deliberately NOT gated on checkview_get_test_id(): cleanup in
 			// checkview_clone_elementor_entry() runs whenever this helper is
 			// loaded and tolerates an empty test id, so gating capture on it
 			// would let the two diverge — cleanup would find no watermark and
@@ -207,7 +241,8 @@ if ( ! class_exists( 'Checkview_Elementor_Helper' ) ) {
 
 			$this->submission_watermarks[ $element_id ] = (int) $wpdb->get_var(
 				$wpdb->prepare(
-					'SELECT COALESCE(MAX(id), 0) FROM ' . $submissions_table . ' WHERE element_id = %s',
+					'SELECT COALESCE(MAX(id), 0) FROM %i WHERE element_id = %s',
+					$submissions_table,
 					$element_id
 				)
 			);
@@ -379,7 +414,7 @@ if ( ! class_exists( 'Checkview_Elementor_Helper' ) ) {
 			}
 
 			$form_id           = $record->get_form_settings( 'id' );
-			$checkview_test_id = get_checkview_test_id();
+			$checkview_test_id = checkview_get_test_id();
 
 			if ( empty( $checkview_test_id ) ) {
 				$checkview_test_id = $form_id . gmdate( 'Ymd' );
@@ -404,7 +439,7 @@ if ( ! class_exists( 'Checkview_Elementor_Helper' ) ) {
 				$form_data = array();
 			}
 
-			$entry_data  = array(
+			$entry_data        = array(
 				'form_id'      => $form_id,
 				'status'       => 'publish',
 				'source_url'   => isset( $_SERVER['HTTP_REFERER'] ) ? substr( sanitize_url( wp_unslash( $_SERVER['HTTP_REFERER'] ) ), 0, 200 ) : '',
@@ -413,8 +448,8 @@ if ( ! class_exists( 'Checkview_Elementor_Helper' ) ) {
 				'uid'          => $checkview_test_id,
 				'form_type'    => 'Elementor',
 			);
-			$entry_table = $wpdb->prefix . 'cv_entry';
-			$result      = $wpdb->insert( $entry_table, $entry_data );
+			$entry_table       = $wpdb->prefix . 'cv_entry';
+			$result            = $wpdb->insert( $entry_table, $entry_data );
 			$inserted_entry_id = $wpdb->insert_id;
 
 			if ( ! $result ) {
@@ -432,12 +467,14 @@ if ( ! class_exists( 'Checkview_Elementor_Helper' ) ) {
 						'uid'        => $checkview_test_id,
 						'form_id'    => $form_id,
 						'entry_id'   => $inserted_entry_id,
+						// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
 						'meta_key'   => checkview_truncate_meta_key( $key ),
 						'meta_value' => is_array( $val ) ? wp_json_encode( $val ) : $val,
+						// phpcs:enable WordPress.DB.SlowDBQuery
 					);
 
 					if ( $wpdb->insert( $entry_meta_table, $entry_metadata ) ) {
-						$count++;
+						++$count;
 					}
 				}
 
@@ -491,7 +528,8 @@ if ( ! class_exists( 'Checkview_Elementor_Helper' ) ) {
 					// Only rows created after the watermark can belong to this test.
 					$candidates = $wpdb->get_results(
 						$wpdb->prepare(
-							'SELECT id, user_ip FROM ' . $submissions_table . ' WHERE element_id = %s AND id > %d ORDER BY id ASC',
+							'SELECT id, user_ip FROM %i WHERE element_id = %s AND id > %d ORDER BY id ASC',
+							$submissions_table,
 							$element_id,
 							$watermark
 						)
@@ -525,7 +563,7 @@ if ( ! class_exists( 'Checkview_Elementor_Helper' ) ) {
 				}
 			}
 
-			complete_checkview_test( $checkview_test_id );
+			checkview_complete_test( $checkview_test_id );
 		}
 
 		/**
@@ -543,10 +581,10 @@ if ( ! class_exists( 'Checkview_Elementor_Helper' ) ) {
 		 * @param \ElementorPro\Modules\Forms\Classes\Form_Record $record Form record.
 		 * @return array
 		 */
-		public function checkview_override_mail_fields( $fields, $record ) {
-			$cv_test_id = get_checkview_test_id();
+		public function checkview_override_mail_fields( $fields, $record ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
+			$cv_test_id = checkview_get_test_id();
 
-			if ( ! $cv_test_id || ! defined( 'TEST_EMAIL' ) ) {
+			if ( ! $cv_test_id || ! defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
 				return $fields;
 			}
 
@@ -554,8 +592,8 @@ if ( ! class_exists( 'Checkview_Elementor_Helper' ) ) {
 			// the test inbox. `email_to` is a comma-separated string here.
 			// CC/BCC are read out of $fields AFTER this filter runs, so leaving
 			// them untouched preserves the customer's full recipient list.
-			if ( cv_should_allow_original_recipients() ) {
-				$fields['email_to'] = cv_append_test_email_string( $fields['email_to'] ?? '' );
+			if ( checkview_should_allow_original_recipients() ) {
+				$fields['email_to'] = checkview_append_test_email_string( $fields['email_to'] ?? '' );
 
 				Checkview_Admin_Logs::add( 'ip-logs', 'Append-mode submission recipient email address: ' . wp_json_encode( $fields['email_to'] ) );
 				return $fields;
@@ -564,12 +602,12 @@ if ( ! class_exists( 'Checkview_Elementor_Helper' ) ) {
 			if ( 'true' === get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
 				// Keep the form's real recipient and also deliver to the test inbox.
 				$fields['email_to'] = ( ! empty( $fields['email_to'] ) )
-					? $fields['email_to'] . ', ' . TEST_EMAIL
-					: TEST_EMAIL;
+					? $fields['email_to'] . ', ' . CHECKVIEW_TEST_EMAIL
+					: CHECKVIEW_TEST_EMAIL;
 			} else {
 				// Divert to the test inbox only; strip CC/BCC so test-run emails
 				// cannot reach the site's real recipients.
-				$fields['email_to']     = TEST_EMAIL;
+				$fields['email_to']     = CHECKVIEW_TEST_EMAIL;
 				$fields['email_to_cc']  = '';
 				$fields['email_to_bcc'] = '';
 			}
@@ -578,8 +616,8 @@ if ( ! class_exists( 'Checkview_Elementor_Helper' ) ) {
 		}
 
 		/**
-		 * Injects `Reply-To: TEST_EMAIL` into Elementor's email headers under
-		 * append-mode.
+		 * Injects `Reply-To: CHECKVIEW_TEST_EMAIL` into Elementor's email headers
+		 * under append-mode.
 		 *
 		 * Elementor Pro resolves its Reply-To address from the form record
 		 * *before* `elementor_pro/forms/wp_mail_fields` fires, then builds the
@@ -590,18 +628,18 @@ if ( ! class_exists( 'Checkview_Elementor_Helper' ) ) {
 		 *
 		 * Reply-To injection defends against MTA variance: when the customer's
 		 * mail server splits SMTP delivery per RCPT TO, Postmark may not see
-		 * TEST_EMAIL in the To header, and the test-runner's fallback chain
-		 * relies on the test_id-bearing address being present somewhere.
+		 * CHECKVIEW_TEST_EMAIL in the To header, and the test-runner's fallback
+		 * chain relies on the test_id-bearing address being present somewhere.
 		 *
 		 * @param string|array $headers Assembled email headers.
 		 * @return string|array Headers with Reply-To injected, in the input's shape.
 		 */
 		public function checkview_inject_reply_to( $headers ) {
-			if ( ! get_checkview_test_id() || ! cv_should_allow_original_recipients() ) {
+			if ( ! checkview_get_test_id() || ! checkview_should_allow_original_recipients() ) {
 				return $headers;
 			}
 
-			$headers = cv_inject_reply_to_header( $headers );
+			$headers = checkview_inject_reply_to_header( $headers );
 
 			Checkview_Admin_Logs::add( 'ip-logs', 'Append-mode Elementor email headers: ' . wp_json_encode( $headers ) );
 			return $headers;
@@ -619,8 +657,8 @@ if ( ! class_exists( 'Checkview_Elementor_Helper' ) ) {
 		 * @param \ElementorPro\Modules\Forms\Classes\Ajax_Handler $handler Ajax handler.
 		 * @return array
 		 */
-		public function checkview_restrict_submit_actions( $actions, $record, $handler ) {
-			$cv_test_id = get_checkview_test_id();
+		public function checkview_restrict_submit_actions( $actions, $record, $handler ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
+			$cv_test_id = checkview_get_test_id();
 
 			if ( ! $cv_test_id || 'true' !== get_option( 'disable_actions_' . $cv_test_id, false ) ) {
 				return $actions;
@@ -634,9 +672,9 @@ if ( ! class_exists( 'Checkview_Elementor_Helper' ) ) {
 		/**
 		 * Adds a `data-cv-file-types` attribute to Elementor upload fields.
 		 *
-		 * @param array                                                  $item       Field settings.
-		 * @param int                                                    $item_index Field index.
-		 * @param \ElementorPro\Modules\Forms\Widgets\Form               $form       Form widget instance.
+		 * @param array                                    $item       Field settings.
+		 * @param int                                      $item_index Field index.
+		 * @param \ElementorPro\Modules\Forms\Widgets\Form $form       Form widget instance.
 		 * @return void
 		 */
 		public function checkview_add_upload_file_types( $item, $item_index, $form ) {
@@ -654,7 +692,7 @@ if ( ! class_exists( 'Checkview_Elementor_Helper' ) ) {
 		 * @return array
 		 */
 		public function checkview_skip_captcha_types( $skip_types ) {
-			if ( ! get_checkview_test_id() ) {
+			if ( ! checkview_get_test_id() ) {
 				return $skip_types;
 			}
 

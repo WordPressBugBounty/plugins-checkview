@@ -35,6 +35,7 @@ class CheckView_Api {
 		// Keep printed notices out of our JSON responses. Only our own routes;
 		// rest_api_init fires for every REST request on the site.
 		if ( Checkview_Admin::is_checkview_rest_request() ) {
+			// phpcs:ignore WordPress.PHP.IniSet.display_errors_Disallowed -- Our routes only; notices would break JSON.
 			ini_set( 'display_errors', '0' );
 		}
 		register_rest_route(
@@ -419,6 +420,7 @@ class CheckView_Api {
 		$args = array(
 			'limit'          => - 1,
 			'payment_method' => 'checkview',
+			// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query -- Limited to checkview payment method orders.
 			'meta_query'     => array(
 				array(
 					'relation' => 'AND', // Use 'AND' for both conditions to apply.
@@ -431,10 +433,8 @@ class CheckView_Api {
 			),
 		);
 		if ( empty( $orders ) && ! empty( $checkview_order_last_modified_until ) && ! empty( $checkview_order_last_modified_since ) ) {
-
 			$args['date_before'] = $checkview_order_last_modified_until;
 			$args['date_after']  = $checkview_order_last_modified_since;
-
 		}
 
 		if ( empty( $orders ) && ! empty( $checkview_order_id_before ) ) {
@@ -454,7 +454,6 @@ class CheckView_Api {
 					$order_details['order_id']    = $order->get_id();
 					$order_details['customer_id'] = $order_object->get_customer_id();
 					$orders[]                     = $order_details;
-
 				}
 			}
 		}
@@ -679,11 +678,13 @@ class CheckView_Api {
 			);
 		}
 		global $wpdb;
-		$products               = get_transient( 'checkview_store_products_transient' );
 		$checkview_keyword      = $request->get_param( 'checkview_keyword' );
 		$checkview_product_type = $request->get_param( 'checkview_product_type' );
 		$checkview_keyword      = isset( $checkview_keyword ) ? sanitize_text_field( $checkview_keyword ) : null;
 		$checkview_product_type = isset( $checkview_product_type ) ? sanitize_text_field( $checkview_product_type ) : null;
+		// The transient holds only the unfiltered list; filtered requests bypass it.
+		$is_filtered = ! empty( $checkview_keyword ) || ! empty( $checkview_product_type );
+		$products    = $is_filtered ? false : get_transient( 'checkview_store_products_transient' );
 		if ( isset( $this->jwt_error ) && null !== $this->jwt_error ) {
 			Checkview_Admin_Logs::add( 'api-logs', $this->jwt_error );
 			return new WP_Error(
@@ -707,34 +708,31 @@ class CheckView_Api {
 		$args = array(
 			'post_type'           => 'product',
 			'post_status'         => array( 'publish', 'draft' ),
+			// phpcs:ignore WordPress.WP.PostsPerPage.posts_per_page_posts_per_page -- SaaS product picker needs full list.
 			'posts_per_page'      => 1000,
 			'ignore_sticky_posts' => 1,
 			'orderby'             => 'modified',        // Order by last modified date.
 			'order'               => 'DESC',
 		);
 		if ( ! empty( $checkview_keyword ) && null !== $checkview_keyword ) {
-
 			$args['s'] = $checkview_keyword;
-
 		}
 
 		if ( ! empty( $checkview_product_type ) && null !== $checkview_product_type ) {
-
+			// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_tax_query -- Single product_type term filter.
 			$args['tax_query'] = array(
 				array(
 					'taxonomy' => 'product_type',
 					'field'    => 'slug',
-					'terms'    => $checkview_keyword,
+					'terms'    => $checkview_product_type,
 				),
 			);
-
 		}
 		$loop = new WP_Query( $args );
 
 		$products = array();
 
 		if ( ! empty( $loop->posts ) ) {
-
 			foreach ( $loop->posts as $post ) {
 				// Initialize an array to store variations.
 				$variations = array();
@@ -762,7 +760,6 @@ class CheckView_Api {
 					'thumb_url'  => get_the_post_thumbnail_url( $post->ID ),
 					'variations' => $variations,
 				);
-
 			}
 		}
 		if ( $products && ! empty( $products ) && false !== $products && '' !== $products ) {
@@ -770,7 +767,9 @@ class CheckView_Api {
 			$products['cart_url']      = wc_get_cart_url();
 			$products['checkout_url']  = wc_get_checkout_url();
 			$products['myaccount_url'] = wc_get_page_permalink( 'myaccount' );
-			set_transient( 'checkview_store_products_transient', $products, 12 * HOUR_IN_SECONDS );
+			if ( ! $is_filtered ) {
+				set_transient( 'checkview_store_products_transient', $products, 12 * HOUR_IN_SECONDS );
+			}
 			return new WP_REST_Response(
 				array(
 					'status'        => 200,
@@ -852,7 +851,6 @@ class CheckView_Api {
 			wp_die();
 		}
 		foreach ( $zones as $zone ) {
-
 			$obj = array(
 				'countries'   => array(),
 				'postalCodes' => array(),
@@ -951,7 +949,7 @@ class CheckView_Api {
 				$order_object = null;
 				$current_user = get_user_by( 'id', $customer_id );
 				// Delete customer if available.
-				if ( $customer_id && isset( $current_user->roles ) && ! in_array( 'administrator', $current_user->roles ) ) {
+				if ( $customer_id && isset( $current_user->roles ) && ! in_array( 'administrator', $current_user->roles, true ) ) {
 					$customer = new WC_Customer( $customer_id );
 
 					if ( ! function_exists( 'wp_delete_user' ) ) {
@@ -1182,7 +1180,7 @@ class CheckView_Api {
 				esc_html__( 'Invalid request.', 'checkview' ),
 			);
 		}
-		$product = Checkview_Woo_Automated_Testing::checkview_get_test_product();
+		$product                              = Checkview_Woo_Automated_Testing::checkview_get_test_product();
 		$product_details['checkview_product'] = $product ? get_permalink( $product->get_id() ) : false;
 		if ( ! empty( $product_details ) && false !== $product_details['checkview_product'] ) {
 			return new WP_REST_Response(
@@ -1209,7 +1207,7 @@ class CheckView_Api {
 	public function checkview_get_available_forms_list() {
 		global $wpdb;
 		$forms_list = get_transient( 'checkview_forms_list_transient' );
-		$is_local = checkview_is_local_environment();
+		$is_local   = checkview_is_local_environment();
 		if ( null !== $this->jwt_error ) {
 			Checkview_Admin_Logs::add( 'api-logs', $this->jwt_error );
 			return new WP_Error(
@@ -1217,8 +1215,6 @@ class CheckView_Api {
 				esc_html__( 'Invalid request.', 'checkview' ),
 			);
 		}
-		// Temporarily suppress errors.
-		$previous_error_reporting = error_reporting( 0 );
 
 		if ( '' !== $forms_list && null !== $forms_list && false !== $forms_list && ! $is_local ) {
 			return new WP_REST_Response(
@@ -1234,12 +1230,11 @@ class CheckView_Api {
 			include_once ABSPATH . 'wp-admin/includes/plugin.php';
 		}
 
-		$post_types        = checkview_get_form_page_post_types();
-		$type_placeholders = checkview_post_type_placeholders( $post_types );
+		$post_types = checkview_get_form_page_post_types();
 
 		if ( is_plugin_active( 'gravityforms/gravityforms.php' ) ) {
 			$tablename = $wpdb->prefix . 'gf_form';
-			$results   = $wpdb->get_results( $wpdb->prepare( 'Select * from ' . $tablename . ' where is_active=%d and is_trash=%d order by ID ASC', 1, 0 ) );
+			$results   = $wpdb->get_results( $wpdb->prepare( 'Select * from %i where is_active=%d and is_trash=%d order by ID ASC', $tablename, 1, 0 ) );
 			if ( $results ) {
 				foreach ( $results as $row ) {
 					$forms['GravityForms'][ $row->id ] = array(
@@ -1247,39 +1242,61 @@ class CheckView_Api {
 						'Name' => $row->title,
 					);
 					$tablename                         = $wpdb->prefix . 'gf_addon_feed';
-					$addons                            = $wpdb->get_results( $wpdb->prepare( 'Select * from ' . $tablename . ' where is_active=%d and form_id=%d', 1, $row->id ) );
+					$addons                            = $wpdb->get_results( $wpdb->prepare( 'Select * from %i where is_active=%d and form_id=%d', $tablename, 1, $row->id ) );
 					foreach ( $addons as $addon ) {
 						$forms['GravityForms'][ $row->id ]['addons'][] = $addon->addon_slug;
 					}
+					// Gravity Forms registers BOTH `[gravityform]` and
+					// `[gravityforms]` to the same callback
+					// (gravityforms.php:252-253). The plural is the original
+					// spelling, so it is precisely the older content that carries
+					// it. The two tags do not overlap as LIKE patterns — after
+					// `[gravityform` the singular needs a space and the plural an
+					// `s` — so each spelling needs its own set.
+					//
+					// Each spelling gets four bounded ID forms. The unquoted one
+					// was unterminated, so form 12 also matched
+					// [gravityform id=123] and silently inherited its pages: `]`
+					// ends the shortcode, a space means further attributes follow
+					// (title, description, ajax, tabindex, field_values, theme).
+					// Quoted variants are bounded by their closing quote.
+					//
+					// Single quotes are included because WordPress's own
+					// shortcode parser accepts `id="7"`, `id='7'` and `id=7`
+					// identically (wp-includes/shortcodes.php:551), so a
+					// single-quoted embed is a working form that was undiscovered.
+					$gf_patterns = array(
+						'%wp:gravityforms/form {"formId":"' . $row->id . '"%',
+					);
+					foreach ( array( 'gravityform', 'gravityforms' ) as $gf_tag ) {
+						$gf_patterns[] = '%[' . $gf_tag . ' id="' . $row->id . '"%';
+						$gf_patterns[] = '%[' . $gf_tag . " id='" . $row->id . "'%";
+						$gf_patterns[] = '%[' . $gf_tag . ' id=' . $row->id . ']%';
+						$gf_patterns[] = '%[' . $gf_tag . ' id=' . $row->id . ' %';
+					}
+
+					// Placeholder list is generated from the pattern count, not
+					// from any user-supplied value, so the interpolation below is
+					// a fixed repetition of `post_content LIKE %s`. Every actual
+					// value is still bound through $wpdb->prepare().
 					// WPDBPREPARE.
+					$gf_where = implode( ' OR ', array_fill( 0, count( $gf_patterns ), 'post_content LIKE %s' ) );
+
+					// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Interpolated value is a generated list of LIKE %s clauses.
 					$form_pages = $wpdb->get_results(
 						$wpdb->prepare(
 							"SELECT ID, post_type FROM {$wpdb->prefix}posts
-						WHERE 1=1 
-						AND (
-							post_content LIKE %s 
-							OR post_content LIKE %s 
-							OR post_content LIKE %s  
-							OR post_content LIKE %s
-						) 
-						AND post_status = 'publish' 
-						AND post_type IN ( {$type_placeholders} )",
-							array_merge(
-								array(
-									'%wp:gravityforms/form {"formId":"' . $row->id . '"%',
-									'%[gravityform id="' . $row->id . '"%',
-									'%[gravityform id=' . $row->id . '%',
-									'%[gravityform id=' . $row->id . '%',
-								),
-								$post_types
-							)
+						WHERE 1=1
+						AND ( {$gf_where} )
+						AND post_status = 'publish'
+						AND post_type IN ( " . implode( ', ', array_fill( 0, count( $post_types ), '%s' ) ) . ' )',
+							array_merge( $gf_patterns, $post_types )
 						)
 					);
+					// phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 					if ( $form_pages ) {
 						foreach ( $form_pages as $form_page ) {
-
 							if ( 'wp_block' === $form_page->post_type ) {
-
 								$wp_block_pages = checkview_get_wp_block_pages( $form_page->ID );
 								if ( $wp_block_pages ) {
 									foreach ( $wp_block_pages as $wp_block_page ) {
@@ -1303,7 +1320,7 @@ class CheckView_Api {
 
 		if ( is_plugin_active( 'fluentform/fluentform.php' ) ) {
 			$tablename = $wpdb->prefix . 'fluentform_forms';
-			$results   = $wpdb->get_results( $wpdb->prepare( 'Select * from ' . $tablename . ' where status=%s order by ID ASC', 'published' ) );
+			$results   = $wpdb->get_results( $wpdb->prepare( 'Select * from %i where status=%s order by ID ASC', $tablename, 'published' ) );
 			if ( $results ) {
 				foreach ( $results as $row ) {
 					$forms['FluentForms'][ $row->id ] = array(
@@ -1322,22 +1339,32 @@ class CheckView_Api {
 							OR post_content LIKE %s
 						) 
 						AND post_status = 'publish' 
-						AND post_type IN ( {$type_placeholders} )",
+						AND post_type IN ( " . implode( ', ', array_fill( 0, count( $post_types ), '%s' ) ) . ' )',
 							array_merge(
 								array(
 									'%wp:fluentfom/guten-block {"formId":"' . $row->id . '"%',
+									// The unquoted shortcode pattern was unterminated, so
+									// form 12 also matched [fluentform id=123] and
+									// silently inherited that form's pages. The two slots
+									// below previously held byte-identical duplicates, so
+									// both terminators fit without changing the
+									// placeholder count: `]` ends the shortcode, a space
+									// means further attributes follow (Fluent merges its
+									// defaults through shortcode_atts() with the
+									// `fluentform/shortcode_defaults` filter, so the
+									// accepted set is open-ended). Either way the ID is
+									// bounded. The quoted variant above is already bounded
+									// by its closing quote.
 									'%[fluentform id="' . $row->id . '"%',
-									'%[fluentform id=' . $row->id . '%',
-									'%[fluentform id=' . $row->id . '%',
+									'%[fluentform id=' . $row->id . ']%',
+									'%[fluentform id=' . $row->id . ' %',
 								),
 								$post_types
 							)
 						)
 					);
 					foreach ( $form_pages as $form_page ) {
-
 						if ( ! empty( $form_page->post_type ) && 'wp_block' === $form_page->post_type ) {
-
 							$wp_block_pages = checkview_get_wp_block_pages( $form_page->ID );
 							if ( $wp_block_pages ) {
 								foreach ( $wp_block_pages as $wp_block_page ) {
@@ -1360,32 +1387,87 @@ class CheckView_Api {
 
 		if ( is_plugin_active( 'ninja-forms/ninja-forms.php' ) ) {
 			$tablename = $wpdb->prefix . 'nf3_forms';
-			$results   = $wpdb->get_results( $wpdb->prepare( 'Select * from ' . $tablename . ' order by ID ASC' ) );
+			$results   = $wpdb->get_results( $wpdb->prepare( 'Select * from %i order by ID ASC', $tablename ) );
 			if ( $results ) {
 				foreach ( $results as $row ) {
 					$forms['NinjaForms'][ $row->id ] = array(
 						'ID'   => $row->id,
 						'Name' => $row->title,
 					);
+
+					/*
+					 * Verified against Ninja Forms 3.14.11.
+					 *
+					 * The old block pattern was written as '{\"formID\":' inside
+					 * a SINGLE-quoted PHP string, so it holds a literal
+					 * backslash. It still matched real blocks, because
+					 * backslash is LIKE's default escape character and MySQL
+					 * reads \" as a plain quote. But it ended right after the
+					 * ID, so form 7 also matched forms 71 and 712.
+					 *
+					 * Its `formID` attribute is registered as 'type' => 'integer'
+					 * (build/form-block.js block.json), so it serialises UNQUOTED:
+					 *
+					 *   <!-- wp:ninja-forms/form {"formID":7} /-->
+					 *   <!-- wp:ninja-forms/form {"formID":7,"formTitle":"..."} /-->
+					 *
+					 * Unlike Gravity Forms and Formidable — whose formId is a
+					 * quoted string, and whose closing quote bounds the value —
+					 * an unquoted integer has no terminator of its own.
+					 * The two patterns below bound the value with `}` (formID is
+					 * the only attribute) or `,` (further attributes follow),
+					 * which are the only two characters that can legally end a
+					 * JSON integer here.
+					 *
+					 * `formTitle` is declared after `formID`, and Gutenberg
+					 * serialises comment attributes in registered-schema order,
+					 * so `{"formID":` is a stable prefix.
+					 *
+					 * The quoted variants no longer require a closing `]`, and the
+					 * bare variant carries BOTH terminators — `]` for the end of
+					 * the shortcode and a space for further attributes. Ninja
+					 * Forms ignores extra attributes but WordPress still renders
+					 * them, so `[ninja_form id=12 title="x"]` is valid content
+					 * that a `]`-only pattern silently missed. The ID stays
+					 * bounded either way, so form 12 cannot match form 123.
+					 *
+					 * Ninja Forms also registers `ninja_forms` (plural) as a
+					 * shortcode alias, and the block's own `deprecated` entry
+					 * saved `[ninja_forms id=N]` — so that spelling exists in
+					 * real post content on sites that used the older block and
+					 * was never matched.
+					 */
 					// WPDBPREPARE.
 					$form_pages = $wpdb->get_results(
 						$wpdb->prepare(
-							"SELECT * FROM {$wpdb->prefix}posts 
-						WHERE 1=1 
+							"SELECT ID, post_type FROM {$wpdb->prefix}posts
+						WHERE 1=1
 						AND (
-							post_content LIKE %s 
-							OR post_content LIKE %s 
-							OR post_content LIKE %s 
+							post_content LIKE %s
 							OR post_content LIKE %s
-						) 
-						AND post_status = 'publish' 
-						AND post_type IN ( {$type_placeholders} )",
+							OR post_content LIKE %s
+							OR post_content LIKE %s
+							OR post_content LIKE %s
+							OR post_content LIKE %s
+							OR post_content LIKE %s
+							OR post_content LIKE %s
+							OR post_content LIKE %s
+							OR post_content LIKE %s
+						)
+						AND post_status = 'publish'
+						AND post_type IN ( " . implode( ', ', array_fill( 0, count( $post_types ), '%s' ) ) . ' )',
 							array_merge(
 								array(
-									'%wp:ninja-forms/form {\"formID\":' . $row->id . '%',
-									'%[ninja_form id="' . $row->id . '"]%',
+									'%wp:ninja-forms/form {"formID":' . $row->id . '}%',
+									'%wp:ninja-forms/form {"formID":' . $row->id . ',%',
+									'%[ninja_form id="' . $row->id . '"%',
 									'%[ninja_form id=' . $row->id . ']%',
-									'%[ninja_form id=\'' . $row->id . '\']%',
+									'%[ninja_form id=' . $row->id . ' %',
+									"%[ninja_form id='" . $row->id . "'%",
+									'%[ninja_forms id="' . $row->id . '"%',
+									'%[ninja_forms id=' . $row->id . ']%',
+									'%[ninja_forms id=' . $row->id . ' %',
+									"%[ninja_forms id='" . $row->id . "'%",
 								),
 								$post_types
 							)
@@ -1456,7 +1538,40 @@ class CheckView_Api {
 
 		if ( is_plugin_active( 'formidable/formidable.php' ) ) {
 			$tablename = $wpdb->prefix . 'frm_forms';
-			$results   = $wpdb->get_results( $wpdb->prepare( 'Select * from ' . $tablename . ' where 1=%d and status=%s', 1, 'published' ) );
+
+			/*
+			 * Mirror Formidable's own definition of a submittable form
+			 * (FrmForm::get_published_forms(), FrmForm.php:969-975) rather than
+			 * reimplementing it, so it cannot drift from upstream:
+			 *
+			 *   is_template = 0                  templates are not submittable
+			 *   parent_form_id IN ( NULL, 0 )    child forms are the inner form of
+			 *                                    a repeater/embedded field and are
+			 *                                    only submitted via their parent
+			 *   status IN ( NULL, '', published )
+			 *
+			 * That last one widens the previous `status = 'published'`: Formidable
+			 * treats NULL and '' as published, so forms whose status column was
+			 * never populated were silently absent from the list.
+			 */
+			if ( is_callable( array( 'FrmForm', 'get_published_forms' ) ) ) {
+				// Default limit is 999; pass a higher one so large sites are not
+				// silently truncated.
+				$results = FrmForm::get_published_forms( array(), 999999 );
+			} else {
+				$results = $wpdb->get_results(
+					$wpdb->prepare(
+						"SELECT * FROM %i
+						WHERE is_template = %d
+						AND ( status IS NULL OR status = '' OR status = %s )
+						AND ( parent_form_id IS NULL OR parent_form_id = %d )",
+						$tablename,
+						0,
+						'published',
+						0
+					)
+				);
+			}
 			if ( $results ) {
 				foreach ( $results as $row ) {
 					$forms['Formidable'][ $row->id ] = array(
@@ -1464,21 +1579,59 @@ class CheckView_Api {
 						'Name' => $row->name,
 					);
 
+					/*
+					 * Mirrors Formidable's own reference detection —
+					 * FrmFormsListHelper::get_base_search_strings_for_form()
+					 * (verified against Formidable 6.33.1). A form can be placed
+					 * five ways; CheckView previously matched only 1 and 3:
+					 *
+					 *   1. [formidable id=N]
+					 *   2. [formidable id=N title=false]   (extra attributes)
+					 *   3. [formidable id="N"]             (what Formidable's UI emits)
+					 *   4. [formidable id='N']
+					 *   5. <!-- wp:formidable/simple-form {"formId":"N"} -->
+					 *
+					 * The old double-quoted pattern was written as
+					 * '%[formidable id=\"' in a SINGLE-quoted PHP string, so it
+					 * holds a literal backslash. It still matched: backslash is
+					 * LIKE's default escape character, so MySQL reads \" as a
+					 * plain quote. The block also saves the shortcode inside its
+					 * markup, so block placements were found that way. What was
+					 * missed: an unquoted id followed by more attributes (2), a
+					 * single-quoted id (4), and block markup without the inner
+					 * shortcode (5).
+					 *
+					 * Anchoring the block pattern on `{` is safe: FrmSimpleBlocks
+					 * Controller registers `formId` first as 'type' => 'string',
+					 * and Gutenberg serializes comment attributes in registered-
+					 * schema order.
+					 *
+					 * Each pattern self-disambiguates by ID (closing `]`, trailing
+					 * space, or closing quote), so form 12 does not match content
+					 * referencing form 123. Only the integer `frm_forms.id` is
+					 * interpolated, so no esc_like() handling is needed.
+					 */
 					// WPDBPREPARE.
 					$form_pages = $wpdb->get_results(
 						$wpdb->prepare(
 							"SELECT ID, post_type FROM {$wpdb->prefix}posts
-						WHERE 1=1 
+						WHERE 1=1
 						AND (
-							post_content LIKE %s 
+							post_content LIKE %s
 							OR post_content LIKE %s
-						) 
-						AND post_status = 'publish' 
-						AND post_type IN ( {$type_placeholders} )",
+							OR post_content LIKE %s
+							OR post_content LIKE %s
+							OR post_content LIKE %s
+						)
+						AND post_status = 'publish'
+						AND post_type IN ( " . implode( ', ', array_fill( 0, count( $post_types ), '%s' ) ) . ' )',
 							array_merge(
 								array(
-									'%[formidable id=\"' . $row->id . '\"%',
 									'%[formidable id=' . $row->id . ']%',
+									'%[formidable id=' . $row->id . ' %',
+									'%[formidable id="' . $row->id . '"%',
+									"%[formidable id='" . $row->id . "'%",
+									'%wp:formidable/simple-form {"formId":"' . $row->id . '"%',
 								),
 								$post_types
 							)
@@ -1486,9 +1639,7 @@ class CheckView_Api {
 					);
 					if ( $form_pages ) {
 						foreach ( $form_pages as $form_page ) {
-
 							if ( ! empty( $form_page->post_type ) && 'wp_block' === $form_page->post_type ) {
-
 								$wp_block_pages = checkview_get_wp_block_pages( $form_page->ID );
 								if ( $wp_block_pages ) {
 									foreach ( $wp_block_pages as $wp_block_page ) {
@@ -1521,37 +1672,147 @@ class CheckView_Api {
 			$results = get_posts( $args );
 			if ( $results ) {
 				foreach ( $results as $row ) {
-					$hash                     = substr( get_post_meta( $row->ID, '_hash', true ), 0, absint( 7 ) );
+					$hash = substr( get_post_meta( $row->ID, '_hash', true ), 0, absint( 7 ) );
+
+					// Fall back to the post ID when `_hash` is missing. Without
+					// this, a hash-less form was reported to the SaaS with
+					// `ID => ''` — page discovery below now finds it, but the form
+					// itself was unidentifiable, so the guard alone left it
+					// half-broken.
+					//
+					// The post ID is a valid substitute rather than a placeholder:
+					// CF7 resolves the shortcode `id` by hash FIRST and falls back
+					// to the post ID (includes/contact-form-functions.php:248-252),
+					// so both identify the same form to CF7 itself.
 					$forms['CF7'][ $row->ID ] = array(
-						'ID'   => $hash,
+						'ID'   => '' !== $hash ? $hash : (string) $row->ID,
 						'Name' => $row->post_title,
 					);
 
+					// Verified against Contact Form 7 6.1.6.
+					//
+					// The block stores the numeric POST ID in `id`
+					// ('type' => 'integer' in includes/block-editor/block.json,
+					// set as `id: parseInt(t)` in index.js) and keeps the hash in
+					// a separate `hash` string attribute. The old pattern looked
+					// for the 7-char hash, quoted, in the `id` slot —
+					// `{"id":"<hash>` — which never matched a real block, so a
+					// CF7 form placed with the block editor was never attributed
+					// to a page.
+					//
+					// Matching on the integer post ID needs an explicit
+					// terminator, since an unquoted integer has none: `,` (the
+					// editor always writes `hash` next) or `}` (defensive, if
+					// `id` were ever the only attribute). Without it, post 12
+					// would match post 123.
+					$cf7_patterns = array(
+						'%wp:contact-form-7/contact-form-selector {"id":' . $row->ID . ',%',
+						'%wp:contact-form-7/contact-form-selector {"id":' . $row->ID . '}%',
+					);
+
+					/*
+					 * CF7 resolves the shortcode `id` by hash FIRST and falls
+					 * back to the post ID:
+					 *
+					 *   $contact_form = wpcf7_get_contact_form_by_hash( $id );
+					 *   if ( ! $contact_form ) { $contact_form = wpcf7_contact_form( $id ); }
+					 *
+					 * (includes/contact-form-functions.php:248-252), so a numeric
+					 * `[contact-form-7 id=123]` is valid, still renders, and is
+					 * the spelling used by content predating CF7's hash ids. It
+					 * was never matched before.
+					 *
+					 * Each is bounded — closing quote, `]`, or a space before
+					 * further attributes — so post 12 cannot match post 123, and
+					 * a numeric id cannot match a hash that merely begins with
+					 * the same digits (a hash is far longer than the id, so the
+					 * terminator never lines up).
+					 */
+					$cf7_patterns[] = '%[contact-form-7 id="' . $row->ID . '"%';
+					$cf7_patterns[] = "%[contact-form-7 id='" . $row->ID . "'%";
+					$cf7_patterns[] = '%[contact-form-7 id=' . $row->ID . ']%';
+					$cf7_patterns[] = '%[contact-form-7 id=' . $row->ID . ' %';
+
+					// Hash-based shortcodes are only searched when a hash exists.
+					//
+					// `_hash` is written by add_post_meta() on save
+					// (includes/contact-form.php:1292), so a form created before
+					// CF7 introduced hash ids and never re-saved since — or one
+					// inserted by an import or migration — has none.
+					// get_post_meta() then returns '' and $hash is ''.
+					//
+					// Interpolating that produced `%[contact-form-7 id="%`, which
+					// matches EVERY CF7 shortcode on the site: the form claimed
+					// every page containing any CF7 form. That is the same
+					// wrong-attribution failure as an unbounded id, with a far
+					// wider blast radius, so the degenerate patterns are simply
+					// not emitted. Such a form is still discoverable through the
+					// block and numeric-id patterns above.
+					//
+					// The hash patterns deliberately do NOT close the quote:
+					// $hash is a 7-char prefix of the full hash CF7 writes into
+					// `[contact-form-7 id="<full hash>" title="..."]`
+					// (includes/contact-form.php:1369), so prefix matching is
+					// required. Collision needs two forms sharing the same 7 hex
+					// chars (~1 in 268M per pair).
+					if ( '' !== $hash ) {
+						$cf7_patterns[] = '%[contact-form-7 id="' . $hash . '%';
+						$cf7_patterns[] = "%[contact-form-7 id='" . $hash . '%';
+					} else {
+						Checkview_Admin_Logs::add(
+							'api-logs',
+							'CF7 form [' . $row->ID . '] has no _hash meta; skipping hash-based page discovery for it (block and numeric-id patterns still apply).'
+						);
+					}
+
+					// CF7 still registers `[contact-form]` alongside
+					// `[contact-form-7]` (load.php:136-137), for content written
+					// before CF7 3.0. It does NOT take the same id: the legacy
+					// branch reads the first positional attribute and resolves it
+					// through the `_old_cf7_unit_id` post meta
+					// (contact-form-functions.php:258-264, :24-39), so the number
+					// in `[contact-form 1]` is an old unit id, unrelated to the
+					// post ID or the hash. Matching post IDs here would attribute
+					// other forms' pages to this one.
+					//
+					// Only forms migrated from pre-3.0 CF7 carry that meta, so on
+					// a modern install this adds no patterns at all.
+					$old_unit_id = get_post_meta( $row->ID, '_old_cf7_unit_id', true );
+					if ( '' !== $old_unit_id && is_numeric( $old_unit_id ) ) {
+						$old_unit_id = absint( $old_unit_id );
+						// Bounded, or form 1 also matches `[contact-form 12]`.
+						$cf7_patterns[] = '%[contact-form ' . $old_unit_id . ']%';
+						$cf7_patterns[] = '%[contact-form ' . $old_unit_id . ' %';
+					}
+
+					// Placeholder list is generated from the pattern count, not
+					// from any user-supplied value, so the interpolation below is
+					// a fixed repetition of `post_content LIKE %s`. Every actual
+					// value is still bound through $wpdb->prepare().
+					// WPDBPREPARE.
+					$cf7_where = implode( ' OR ', array_fill( 0, count( $cf7_patterns ), 'post_content LIKE %s' ) );
+
+					// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Interpolated value is a generated list of LIKE %s clauses.
 					$form_pages = $wpdb->get_results(
 						$wpdb->prepare(
 							"SELECT ID, post_type FROM {$wpdb->prefix}posts
 						WHERE 1=1
 						AND (
-							(post_content LIKE %s OR post_content LIKE %s OR post_content LIKE %s OR post_content LIKE %s)
+							( {$cf7_where} )
 							AND post_status = %s
-							AND post_type IN ( {$type_placeholders} )
-						)",
+							AND post_type IN ( " . implode( ', ', array_fill( 0, count( $post_types ), '%s' ) ) . ' )
+						)',
 							array_merge(
-								array(
-									'%wp:contact-form-7/contact-form-selector {"id":"' . $hash . '%',
-									'%[contact-form-7 id="' . $hash . '%',
-									'%[contact-form-7 id=' . $hash . '%',
-									'%[contact-form-7 id=' . $hash . '%',
-									'publish',
-								),
+								$cf7_patterns,
+								array( 'publish' ),
 								$post_types
 							)
 						)
 					);
+					// phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 					if ( $form_pages ) {
 						foreach ( $form_pages as $form_page ) {
 							if ( ! empty( $form_page->post_type ) && 'wp_block' === $form_page->post_type ) {
-
 								$wp_block_pages = checkview_get_wp_block_pages( $form_page->ID );
 								if ( $wp_block_pages ) {
 									foreach ( $wp_block_pages as $wp_block_page ) {
@@ -1577,7 +1838,7 @@ class CheckView_Api {
 
 		if ( is_plugin_active( 'ws-form/ws-form.php' ) || is_plugin_active( 'ws-form-pro/ws-form.php' ) ) {
 			$tablename = $wpdb->prefix . 'wsf_form';
-			$results   = $wpdb->get_results( $wpdb->prepare( 'Select * from ' . $tablename . ' where status=%s order by id ASC', 'publish' ) );
+			$results   = $wpdb->get_results( $wpdb->prepare( 'Select * from %i where status=%s order by id ASC', $tablename, 'publish' ) );
 			if ( $results ) {
 				foreach ( $results as $row ) {
 					$forms['WSForms'][ $row->id ] = array(
@@ -1596,22 +1857,32 @@ class CheckView_Api {
 							OR post_content LIKE %s
 						) 
 						AND post_status = 'publish' 
-						AND post_type IN ( {$type_placeholders} )",
+						AND post_type IN ( " . implode( ', ', array_fill( 0, count( $post_types ), '%s' ) ) . ' )',
 							array_merge(
 								array(
 									'%wp:wsf-block/form-add {"form_id":"' . $row->id . '"%',
+									// The unquoted shortcode pattern was unterminated, so
+									// form 12 also matched [ws_form id=123] and silently
+									// inherited that form's pages. The two slots below
+									// previously held byte-identical duplicates, so both
+									// terminators fit without changing the placeholder
+									// count: `]` ends the shortcode, a space means further
+									// attributes follow (element, element_id, class,
+									// published, preview, form_html and field_<id>
+									// population attrs — see
+									// WS_Form_Public::shortcode_ws_form). Either way the
+									// ID is bounded. The quoted variant above is already
+									// bounded by its closing quote.
 									'%[ws_form id="' . $row->id . '"%',
-									'%[ws_form id=' . $row->id . '%',
-									'%[ws_form id=' . $row->id . '%',
+									'%[ws_form id=' . $row->id . ']%',
+									'%[ws_form id=' . $row->id . ' %',
 								),
 								$post_types
 							)
 						)
 					);
 					foreach ( $form_pages as $form_page ) {
-
 						if ( ! empty( $form_page->post_type ) && 'wp_block' === $form_page->post_type ) {
-
 							$wp_block_pages = checkview_get_wp_block_pages( $form_page->ID );
 							if ( $wp_block_pages ) {
 								foreach ( $wp_block_pages as $wp_block_page ) {
@@ -1643,8 +1914,8 @@ class CheckView_Api {
 			$results = get_posts( $args );
 			if ( $results ) {
 				foreach ( $results as $row ) {
-					$meta = get_post_meta( $row->ID, 'forminator_form_meta', true );
-					$display_name = $meta['settings']['formName'] ?? $row->post_title;
+					$meta                            = get_post_meta( $row->ID, 'forminator_form_meta', true );
+					$display_name                    = $meta['settings']['formName'] ?? $row->post_title;
 					$forms['forminator'][ $row->ID ] = array(
 						'ID'   => $row->ID,
 						'Name' => $display_name,
@@ -1655,16 +1926,48 @@ class CheckView_Api {
 							"SELECT ID, post_type FROM {$wpdb->prefix}posts
 						WHERE 1=1
 						AND (
-							(post_content LIKE %s OR post_content LIKE %s OR post_content LIKE %s OR post_content LIKE %s)
+							(post_content LIKE %s OR post_content LIKE %s OR post_content LIKE %s OR post_content LIKE %s OR post_content LIKE %s)
 							AND post_status = %s
-							AND post_type IN ( {$type_placeholders} )
-						)",
+							AND post_type IN ( " . implode( ', ', array_fill( 0, count( $post_types ), '%s' ) ) . ' )
+						)',
+							// Verified against Forminator 1.56.0.
+							//
+							// The block attribute is `module_id`, not `id`
+							// (registerBlockType("forminator/forms", { attributes:
+							// { module_id: { type: "string" }, alignment: ... } })
+							// in addons/pro/gutenberg/js/forms-block.min.js), so
+							// the old `{"id":"N` pattern never matched a real
+							// block and a Forminator form placed with the block
+							// editor was never attributed to a page.
+							//
+							// `module_id` is a string and is declared first, so
+							// `{"module_id":"N"` is a stable, quote-bounded prefix.
+							//
+							// The shortcode quote is now closed. Previously
+							// `[forminator_form id="N` was unterminated, so form
+							// 12 matched form 123 and silently inherited another
+							// form's pages — attributing wrong pages rather than
+							// missing them. Forminator's canonical shortcode is
+							// double-quoted ([forminator_form id="276"]); the
+							// single-quoted variant is accepted for hand-authored
+							// content and replaces a slot that previously held a
+							// duplicate of the unquoted pattern.
+							//
+							// The unquoted variant needs BOTH terminators. The
+							// shortcode takes further attributes (`is_preview`,
+							// `preview_data`, `is_block_editor` — see
+							// Forminator_Render_Form::render_shortcode), so
+							// requiring only `]` would silently stop matching
+							// [forminator_form id=N is_preview=true]. `]` ends the
+							// shortcode; a space means more attributes follow.
+							// Either way the ID is bounded, so 12 cannot match 123.
 							array_merge(
 								array(
-									'%wp:forminator/forms {"id":"' . $row->ID . '%',
-									'%[forminator_form id="' . $row->ID . '%',
-									'%[forminator_form id=' . $row->ID . '%',
-									'%[forminator_form id=' . $row->ID . '%',
+									'%wp:forminator/forms {"module_id":"' . $row->ID . '"%',
+									'%[forminator_form id="' . $row->ID . '"%',
+									"%[forminator_form id='" . $row->ID . "'%",
+									'%[forminator_form id=' . $row->ID . ']%',
+									'%[forminator_form id=' . $row->ID . ' %',
 									'publish',
 								),
 								$post_types
@@ -1674,7 +1977,6 @@ class CheckView_Api {
 					if ( $form_pages ) {
 						foreach ( $form_pages as $form_page ) {
 							if ( ! empty( $form_page->post_type ) && 'wp_block' === $form_page->post_type ) {
-
 								$wp_block_pages = checkview_get_wp_block_pages( $form_page->ID );
 								if ( $wp_block_pages ) {
 									foreach ( $wp_block_pages as $wp_block_page ) {
@@ -1723,15 +2025,54 @@ class CheckView_Api {
 							OR post_content LIKE %s
 							OR post_content LIKE %s
 							OR post_content LIKE %s
+							OR post_content LIKE %s
 						)
 						AND post_status = 'publish'
-						AND post_type IN ( {$type_placeholders} )",
+						AND post_type IN ( " . implode( ', ', array_fill( 0, count( $post_types ), '%s' ) ) . ' )',
 							array_merge(
 								array(
+									// Verified against Everest Forms 3.5.2.
+									//
+									// The block pattern is correct as-is: `formId` is
+									// 'type' => 'string' (dist/form-selector/block.json),
+									// so it serialises quoted and the closing quote bounds
+									// the value.
+									//
+									// A second, UNQUOTED block pattern used to sit here. It
+									// is now removed. The reasoning for keeping it was
+									// self-contradictory: it was justified both as "inert,
+									// can never match current output" and as "may cover
+									// legacy unquoted output". Only one can be true, and if
+									// the legacy output existed the pattern was unbounded —
+									// form 12 would have matched {"formId":123}, the exact
+									// collision this PR fixes for the shortcode. Since
+									// formId is documented as a string with a '' default,
+									// the pattern was dead, so removing it loses nothing
+									// and drops the contradiction.
+									//
+									// The shortcode patterns are the fix. The unquoted
+									// variant was unterminated, so form 12 matched
+									// [everest_form id=123] and inherited another form's
+									// pages; it now requires the closing `]`. The
+									// single-quoted variant is newly matched — Everest's
+									// own Divi module emits exactly that form
+									// (addons/DiviBuilder/EverestFormsModule.php:137:
+									// sprintf( "[everest_form id='%s']", $form_id )), so
+									// it exists in real content on Divi sites.
 									'%wp:everest-forms/form-selector {"formId":"' . $row->ID . '"%',
-									'%wp:everest-forms/form-selector {"formId":' . $row->ID . '%',
+									//
+									// The unquoted variant needs BOTH terminators. The
+									// shortcode takes further attributes (`type`, `size`,
+									// `title`, `description`, `header_title`, … — see
+									// EVF_Shortcode_Form's shortcode_atts), so requiring
+									// only `]` would silently stop matching
+									// [everest_form id=N title="..."]. `]` ends the
+									// shortcode; a space means more attributes follow.
+									// Either way the ID is bounded, so 12 cannot match 123.
 									'%[everest_form id="' . $row->ID . '"%',
-									'%[everest_form id=' . $row->ID . '%',
+									"%[everest_form id='" . $row->ID . "'%",
+									'%[everest_form id=' . $row->ID . ']%',
+									'%[everest_form id=' . $row->ID . ' %',
 								),
 								$post_types
 							)
@@ -1778,8 +2119,17 @@ class CheckView_Api {
 			 * the reference. Matching on every `global` node would not do: a
 			 * header or button saved as global is on most pages of a site, and
 			 * this query loads each matched page's whole element tree.
+			 *
+			 * A whole template can also be embedded with the Template widget
+			 * (`"template_id":"N"`) or the `[elementor-template id="N"]`
+			 * shortcode, and templates can embed templates. So the set of
+			 * form-bearing templates is widened to every published template
+			 * that reaches a form through such a chain, and pages are matched
+			 * on those ids too. The LIKE patterns are only a prefilter; the walk
+			 * in checkview_get_elementor_form_widgets() decides exactly.
 			 */
-			$patterns = array( '%"widgetType":"form"%' );
+			$patterns          = array( '%"widgetType":"form"%' );
+			$shortcode_pattern = '%' . $wpdb->esc_like( '[elementor-template' ) . '%';
 
 			$form_template_ids = $wpdb->get_col(
 				$wpdb->prepare(
@@ -1793,18 +2143,87 @@ class CheckView_Api {
 					'%"widgetType":"form"%'
 				)
 			);
-			foreach ( (array) $form_template_ids as $form_template_id ) {
-				$form_template_id = (int) $form_template_id;
-				if ( $form_template_id <= 0 ) {
-					continue;
+			$form_template_ids = array_values( array_filter( array_map( 'intval', (array) $form_template_ids ) ) );
+
+			if ( ! empty( $form_template_ids ) ) {
+				// Templates that embed a template, or place a form-bearing Global Widget.
+				$embed_patterns = array( '%"widgetType":"template"%', $shortcode_pattern );
+				foreach ( $form_template_ids as $form_template_id ) {
+					$embed_patterns[] = '%"templateID":' . $form_template_id . '%';
+					$embed_patterns[] = '%"templateID":"' . $form_template_id . '"%';
 				}
-				// Elementor writes templateID as a JSON number; some exports carry a string.
-				$patterns[] = '%"templateID":' . $form_template_id . '%';
-				$patterns[] = '%"templateID":"' . $form_template_id . '"%';
+
+				$embed_like_clauses = implode( ' OR ', array_fill( 0, count( $embed_patterns ), 'pm.meta_value LIKE %s' ) );
+
+				// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Interpolated value is a generated list of %s placeholders.
+				$embedding_template_ids = $wpdb->get_col(
+					$wpdb->prepare(
+						"SELECT p.ID FROM {$wpdb->prefix}posts p
+						INNER JOIN {$wpdb->prefix}postmeta pm ON pm.post_id = p.ID
+						WHERE pm.meta_key = %s
+						AND ( {$embed_like_clauses} )
+						AND p.post_status = 'publish'
+						AND p.post_type = 'elementor_library'",
+						array_merge( array( '_elementor_data' ), $embed_patterns )
+					)
+				);
+				// phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				foreach ( (array) $embedding_template_ids as $embedding_template_id ) {
+					$embedding_template_id = (int) $embedding_template_id;
+					if (
+						$embedding_template_id > 0
+						&& ! in_array( $embedding_template_id, $form_template_ids, true )
+						&& ! empty( checkview_get_elementor_template_forms( $embedding_template_id ) )
+					) {
+						$form_template_ids[] = $embedding_template_id;
+					}
+				}
+
+				foreach ( $form_template_ids as $form_template_id ) {
+					// Elementor writes templateID as a JSON number; some exports carry a string.
+					$patterns[] = '%"templateID":' . $form_template_id . '%';
+					$patterns[] = '%"templateID":"' . $form_template_id . '"%';
+					// Template widget control values are saved as strings; accept a bare number too.
+					$patterns[] = '%"template_id":"' . $form_template_id . '"%';
+					$patterns[] = '%"template_id":' . $form_template_id . '%';
+				}
+
+				// One id-agnostic pattern for shortcode embeds; the walk parses the id.
+				$patterns[] = $shortcode_pattern;
 			}
+
+			/*
+			 * Pages are keyed by post id so a form reached twice on one page,
+			 * or by both queries below, is listed for that page once.
+			 */
+			$add_elementor_page = static function ( $form_widget, $page_id ) use ( &$forms ) {
+				if ( empty( $form_widget['id'] ) ) {
+					return;
+				}
+				$form_id = $form_widget['id'];
+
+				if ( ! isset( $forms['Elementor'][ $form_id ] ) ) {
+					$forms['Elementor'][ $form_id ] = array(
+						'ID'   => $form_id,
+						'Name' => ( ! empty( $form_widget['settings']['form_name'] ) )
+							? $form_widget['settings']['form_name']
+							: 'Form ' . $form_id,
+					);
+				}
+
+				$page_url = checkview_must_ssl_url( get_the_permalink( $page_id ) );
+				if ( ! empty( $page_url ) ) {
+					$forms['Elementor'][ $form_id ]['pages'][ $page_id ] = array(
+						'ID'  => $page_id,
+						'url' => $page_url,
+					);
+				}
+			};
 
 			$like_clauses = implode( ' OR ', array_fill( 0, count( $patterns ), 'pm.meta_value LIKE %s' ) );
 
+			// $like_clauses holds only fixed 'LIKE %s' fragments; values bind below.
+			// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 			$elementor_pages = $wpdb->get_results(
 				$wpdb->prepare(
 					"SELECT p.ID, pm.meta_value FROM {$wpdb->prefix}posts p
@@ -1816,36 +2235,63 @@ class CheckView_Api {
 					array_merge( array( '_elementor_data' ), $patterns )
 				)
 			);
+			// phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 			if ( $elementor_pages ) {
 				foreach ( $elementor_pages as $elementor_page ) {
 					$elementor_data = json_decode( $elementor_page->meta_value, true );
 					if ( ! is_array( $elementor_data ) ) {
 						continue;
 					}
-					$form_widgets = checkview_get_elementor_form_widgets( $elementor_data );
-					foreach ( $form_widgets as $form_widget ) {
-						if ( empty( $form_widget['id'] ) ) {
-							continue;
-						}
-						$form_id   = $form_widget['id'];
-						$form_name = ( ! empty( $form_widget['settings']['form_name'] ) )
-							? $form_widget['settings']['form_name']
-							: 'Form ' . $form_id;
+					foreach ( checkview_get_elementor_form_widgets( $elementor_data ) as $form_widget ) {
+						$add_elementor_page( $form_widget, $elementor_page->ID );
+					}
+				}
+			}
 
-						if ( ! isset( $forms['Elementor'][ $form_id ] ) ) {
-							$forms['Elementor'][ $form_id ] = array(
-								'ID'   => $form_id,
-								'Name' => $form_name,
-							);
-						}
+			/*
+			 * A page not built with Elementor can still embed a template through
+			 * the shortcode in its post content, directly or inside a reusable
+			 * block. Library posts are public but are never the page a form is
+			 * tested on, so they stay out.
+			 */
+			if ( ! empty( $form_template_ids ) ) {
+				// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Interpolated value is a generated list of %s placeholders.
+				$shortcode_posts = $wpdb->get_results(
+					$wpdb->prepare(
+						"SELECT ID, post_type, post_content FROM {$wpdb->prefix}posts
+						WHERE post_content LIKE %s
+						AND post_status = 'publish'
+						AND post_type IN ( " . implode( ', ', array_fill( 0, count( $post_types ), '%s' ) ) . " )
+						AND post_type <> 'elementor_library'",
+						array_merge( array( $shortcode_pattern ), $post_types )
+					)
+				);
+				// phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				foreach ( (array) $shortcode_posts as $shortcode_post ) {
+					$template_forms = array();
+					foreach ( checkview_get_elementor_template_shortcode_ids( $shortcode_post->post_content ) as $template_id ) {
+						$template_forms = array_merge( $template_forms, checkview_get_elementor_template_forms( $template_id ) );
+					}
+					if ( empty( $template_forms ) ) {
+						continue;
+					}
 
-						$page_url = checkview_must_ssl_url( get_the_permalink( $elementor_page->ID ) );
-						if ( ! empty( $page_url ) ) {
-							$forms['Elementor'][ $form_id ]['pages'][] = array(
-								'ID'  => $elementor_page->ID,
-								'url' => $page_url,
-							);
+					$page_ids = array( $shortcode_post->ID );
+					if ( 'wp_block' === $shortcode_post->post_type ) {
+						$page_ids = wp_list_pluck( (array) checkview_get_wp_block_pages( $shortcode_post->ID ), 'ID' );
+					}
+					foreach ( $page_ids as $page_id ) {
+						foreach ( $template_forms as $form_widget ) {
+							$add_elementor_page( $form_widget, $page_id );
 						}
+					}
+				}
+			}
+
+			if ( ! empty( $forms['Elementor'] ) ) {
+				foreach ( $forms['Elementor'] as $form_id => $elementor_form ) {
+					if ( isset( $elementor_form['pages'] ) ) {
+						$forms['Elementor'][ $form_id ]['pages'] = array_values( $elementor_form['pages'] );
 					}
 				}
 			}
@@ -1896,20 +2342,20 @@ class CheckView_Api {
 			);
 		} else {
 			$table_name    = $wpdb->prefix . 'cv_entry';
-			$query         = $wpdb->prepare( 'Select * from ' . $table_name . ' where uid=%s', $uid );
+			$query         = $wpdb->prepare( 'Select * from %i where uid=%s', $table_name, $uid );
 			$query_as_json = wp_json_encode( array( 'query' => $query ) );
-			$result        = $wpdb->get_row( $query ); // We expect an object
+			$result        = $wpdb->get_row( $query ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Prepared above. Expect object.
 
 			if ( is_null( $result ) ) {
 				// Check if a session still exists for this test ID.
 				// If the clone handler ran successfully, it calls
-				// complete_checkview_test() which deletes the session.
+				// checkview_complete_test() which deletes the session.
 				// A lingering session means the form likely submitted but
 				// the clone handler never executed (e.g., another plugin
 				// threw an exception that killed the hook chain).
 				$session_table = $wpdb->prefix . 'cv_session';
 				$session       = $wpdb->get_row(
-					$wpdb->prepare( 'SELECT * FROM ' . $session_table . ' WHERE test_id = %s LIMIT 1', $uid )
+					$wpdb->prepare( 'SELECT * FROM %i WHERE test_id = %s LIMIT 1', $session_table, $uid )
 				);
 
 				if ( ! is_null( $session ) ) {
@@ -1926,7 +2372,13 @@ class CheckView_Api {
 
 				return new WP_Error(
 					400,
-					esc_html__( 'Failed to find test results (query [' . $query_as_json . '] returned null).', 'checkview' ),
+					esc_html(
+						sprintf(
+							/* translators: %s: JSON-encoded query. */
+							__( 'Failed to find test results (query [%s] returned null).', 'checkview' ),
+							$query_as_json
+						)
+					),
 				);
 			}
 
@@ -1935,21 +2387,34 @@ class CheckView_Api {
 
 				return new WP_Error(
 					400,
-					esc_html__( 'Failed to find test results (query [' . $query_as_json . '] returned unexpected type [' . gettype( $result ) . ']).', 'checkview' ),
+					esc_html(
+						sprintf(
+							/* translators: 1: JSON-encoded query, 2: PHP type of the result. */
+							__( 'Failed to find test results (query [%1$s] returned unexpected type [%2$s]).', 'checkview' ),
+							$query_as_json,
+							gettype( $result )
+						)
+					),
 				);
 			}
 
 			$table_name         = $wpdb->prefix . 'cv_entry_meta';
-			$query              = $wpdb->prepare( 'Select * from ' . $table_name . ' where uid=%s order by id ASC', $uid );
+			$query              = $wpdb->prepare( 'Select * from %i where uid=%s order by id ASC', $table_name, $uid );
 			$meta_query_as_json = wp_json_encode( array( 'query' => $query ) );
-			$rows               = $wpdb->get_results( $query ); // We expect an array of objects
+			$rows               = $wpdb->get_results( $query ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Prepared above. Expect array of objects.
 
 			if ( is_null( $rows ) ) {
 				Checkview_Admin_Logs::add( 'api-logs', 'Failed to find test results (query [' . $meta_query_as_json . '] returned null).' );
 
 				return new WP_Error(
 					400,
-					esc_html__( 'Failed to find test results (query [' . $meta_query_as_json . '] returned null).', 'checkview' ),
+					esc_html(
+						sprintf(
+							/* translators: %s: JSON-encoded query. */
+							__( 'Failed to find test results (query [%s] returned null).', 'checkview' ),
+							$meta_query_as_json
+						)
+					),
 				);
 			}
 
@@ -1958,7 +2423,14 @@ class CheckView_Api {
 
 				return new WP_Error(
 					400,
-					esc_html__( 'Failed to find test results (query [' . $meta_query_as_json . '] returned unexpected type [' . gettype( $rows ) . ']).', 'checkview' ),
+					esc_html(
+						sprintf(
+							/* translators: 1: JSON-encoded query, 2: PHP type of the result. */
+							__( 'Failed to find test results (query [%1$s] returned unexpected type [%2$s]).', 'checkview' ),
+							$meta_query_as_json,
+							gettype( $rows )
+						)
+					),
 				);
 			}
 
@@ -1996,11 +2468,11 @@ class CheckView_Api {
 					$value = $row->meta_value;
 
 					$results[] = array(
-						'field_id' => '',
-						'field_name' => $row->meta_key,
+						'field_id'    => '',
+						'field_name'  => $row->meta_key,
 						'field_value' => $value,
 					);
-				} else  {
+				} else {
 					$results[] = array(
 						'field_id'    => $row->meta_key,
 						'field_value' => maybe_unserialize( $row->meta_value ),
@@ -2148,7 +2620,7 @@ class CheckView_Api {
 		}
 
 		global $wp_version;
-		$core_info            = array(
+		$core_info = array(
 			'version' => $wp_version,
 		);
 		// Deliberately does NOT return log contents. This endpoint used to embed
@@ -2292,7 +2764,7 @@ class CheckView_Api {
 	 * @param WP_REST_Request $request wp request object.
 	 * @return WP_REST_Response|WP_Error
 	 */
-	public function checkview_saas_set_helper_status( \WP_REST_Request $request ) {
+	public function checkview_saas_set_helper_status( WP_REST_Request $request ) {
 		// Get the status from the request parameters.
 		$checkview_status = $request->get_param( '_checkview_status' );
 		$checkview_status = sanitize_text_field( $checkview_status );
@@ -2324,7 +2796,7 @@ class CheckView_Api {
 	 * @param WP_REST_Request $request wp request object.
 	 * @return WP_REST_Response|WP_Error
 	 */
-	public function checkview_saas_set_test_product_status( \WP_REST_Request $request ) {
+	public function checkview_saas_set_test_product_status( WP_REST_Request $request ) {
 		if ( ! class_exists( 'WooCommerce' ) ) {
 			Checkview_Admin_Logs::add( 'api-logs', 'WooCommerce not found.' );
 			return new WP_REST_Response(
@@ -2354,10 +2826,10 @@ class CheckView_Api {
 				array( 'status' => 400 )
 			);
 		}
-		$product = Checkview_Woo_Automated_Testing::checkview_get_test_product();
+		$product    = Checkview_Woo_Automated_Testing::checkview_get_test_product();
 		$product_id = ! empty( $product->get_id() ) ? $product->get_id() : false;
-		$status = checkview_update_woocommerce_product_status( $product_id, $checkview_status );
-		if ( 0 != $status && ! is_wp_error( $product_id ) ) {
+		$status     = checkview_update_woocommerce_product_status( $product_id, $checkview_status );
+		if ( 0 !== $status && ! is_wp_error( $product_id ) ) {
 			return new WP_REST_Response(
 				array(
 					'_checkview_status' => 'updated',
@@ -2383,7 +2855,7 @@ class CheckView_Api {
 	 * @param WP_REST_Request $request request data with the api call.
 	 * @return WP_Error|array
 	 */
-	public function checkview_get_items_permissions_check( \WP_REST_Request $request ) {
+	public function checkview_get_items_permissions_check( WP_REST_Request $request ) {
 		nocache_headers();
 		// Get the Authorization header.
 		$auth_header = $request->get_header( 'Authorization' );
@@ -2437,7 +2909,7 @@ class CheckView_Api {
 		);
 		if ( $table_exists !== $cv_used_nonces ) {
 			$charset_collate = $wpdb->get_charset_collate();
-			$sql = "CREATE TABLE IF NOT EXISTS $cv_used_nonces (
+			$sql             = "CREATE TABLE IF NOT EXISTS $cv_used_nonces (
 					id BIGINT(20) NOT NULL AUTO_INCREMENT,
 					nonce VARCHAR(255) NOT NULL,
 					used_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -2450,7 +2922,8 @@ class CheckView_Api {
 		// Check if the nonce exists.
 		$nonce_exists = $wpdb->get_var(
 			$wpdb->prepare(
-				"SELECT COUNT(*) FROM $cv_used_nonces WHERE nonce = %s",
+				'SELECT COUNT(*) FROM %i WHERE nonce = %s',
+				$cv_used_nonces,
 				$nonce_token
 			)
 		);

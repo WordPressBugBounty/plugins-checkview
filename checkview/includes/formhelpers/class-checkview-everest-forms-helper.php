@@ -118,7 +118,7 @@ if ( ! class_exists( 'Checkview_Everest_Forms_Helper' ) ) {
 				4
 			);
 
-			if ( defined( 'TEST_EMAIL' ) ) {
+			if ( defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
 				// Redirect email to test address.
 				add_filter(
 					'everest_forms_entry_email_atts',
@@ -166,12 +166,12 @@ if ( ! class_exists( 'Checkview_Everest_Forms_Helper' ) ) {
 		 * @param array $form_data Form configuration data.
 		 * @return array Modified email attributes.
 		 */
-		public function checkview_inject_email( $email, $fields, $entry, $form_data ) {
-			$cv_test_id = get_checkview_test_id();
-			if ( ! $cv_test_id || 'true' != get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
-				$email['address'] = array( TEST_EMAIL );
+		public function checkview_inject_email( $email, $fields, $entry, $form_data ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
+			$cv_test_id = checkview_get_test_id();
+			if ( ! $cv_test_id || 'true' !== get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
+				$email['address'] = array( CHECKVIEW_TEST_EMAIL );
 			} else {
-				$email['address'][] = TEST_EMAIL;
+				$email['address'][] = CHECKVIEW_TEST_EMAIL;
 			}
 
 			Checkview_Admin_Logs::add( 'ip-logs', 'Submission recipient email address: ' . wp_json_encode( $email['address'] ) );
@@ -185,9 +185,9 @@ if ( ! class_exists( 'Checkview_Everest_Forms_Helper' ) ) {
 		 * @param object $emails_obj EVF_Emails instance.
 		 * @return string Filtered headers string.
 		 */
-		public function checkview_strip_cc_bcc_headers( $headers, $emails_obj ) {
-			$cv_test_id = get_checkview_test_id();
-			if ( $cv_test_id && 'true' == get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
+		public function checkview_strip_cc_bcc_headers( $headers, $emails_obj ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
+			$cv_test_id = checkview_get_test_id();
+			if ( $cv_test_id && 'true' === get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
 				return $headers;
 			}
 
@@ -232,10 +232,10 @@ if ( ! class_exists( 'Checkview_Everest_Forms_Helper' ) ) {
 				return;
 			}
 
-			$checkview_test_id = get_checkview_test_id();
+			$checkview_test_id = checkview_get_test_id();
 
 			// Unhook external integrations when disable_actions is enabled.
-			if ( $checkview_test_id && 'true' == get_option( 'disable_actions_' . $checkview_test_id, false ) ) {
+			if ( $checkview_test_id && 'true' === get_option( 'disable_actions_' . $checkview_test_id, false ) ) {
 				remove_all_actions( 'everest_forms_process_complete_send_data_to_zapier_app' );
 				remove_all_actions( "everest_forms_process_complete_{$form_id}" );
 			}
@@ -268,10 +268,10 @@ if ( ! class_exists( 'Checkview_Everest_Forms_Helper' ) ) {
 
 			// Skip meta loop when parent insert failed: $wpdb->insert_id
 			// is 0, meta rows would be orphaned with entry_id=0.
-			// EVF entry delete and complete_checkview_test() below still run.
+			// EVF entry delete and checkview_complete_test() below still run.
 			if ( $result ) {
 				// Clone entry meta, excluding non-data field types.
-				$excluded_types  = array( 'html', 'title', 'captcha', 'divider', 'reset', 'recaptcha', 'hcaptcha', 'turnstile', 'private-note' );
+				$excluded_types   = array( 'html', 'title', 'captcha', 'divider', 'reset', 'recaptcha', 'hcaptcha', 'turnstile', 'private-note' );
 				$entry_meta_table = $wpdb->prefix . 'cv_entry_meta';
 				$count            = 0;
 
@@ -285,24 +285,24 @@ if ( ! class_exists( 'Checkview_Everest_Forms_Helper' ) ) {
 							'uid'        => $checkview_test_id,
 							'form_id'    => $form_id,
 							'entry_id'   => $entry_id,
+							// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
 							'meta_key'   => checkview_truncate_meta_key( 'evf_' . sanitize_key( $field['meta_key'] ) ),
 							'meta_value' => maybe_serialize( $field['value'] ),
+							// phpcs:enable WordPress.DB.SlowDBQuery
 						);
 
 						$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 						if ( $result ) {
-							$count++;
+							++$count;
 						}
 					}
 				}
 
 				if ( $count > 0 ) {
 					Checkview_Admin_Logs::add( 'ip-logs', 'Cloned submission entry meta data (inserted ' . $count . ' rows into ' . $entry_meta_table . ').' );
-				} else {
-					if ( count( $fields ) > 0 ) {
+				} elseif ( count( $fields ) > 0 ) {
 						Checkview_Admin_Logs::add( 'ip-logs', 'Failed to clone submission entry meta data. wpdb->last_error=[' . $wpdb->last_error . ']' );
-					}
 				}
 			}
 
@@ -310,7 +310,7 @@ if ( ! class_exists( 'Checkview_Everest_Forms_Helper' ) ) {
 			$wpdb->delete( $wpdb->prefix . 'evf_entries', array( 'entry_id' => $entry_id ) );
 			$wpdb->delete( $wpdb->prefix . 'evf_entrymeta', array( 'entry_id' => $entry_id ) );
 
-			complete_checkview_test( $checkview_test_id );
+			checkview_complete_test( $checkview_test_id );
 		}
 	}
 

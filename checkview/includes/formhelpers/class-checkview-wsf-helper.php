@@ -64,7 +64,7 @@ if ( ! class_exists( 'Checkview_WSF_Helper' ) ) {
 				999
 			);
 
-			if ( defined( 'TEST_EMAIL' ) ) {
+			if ( defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
 				add_filter(
 					'wsf_action_email_to',
 					array(
@@ -118,7 +118,7 @@ if ( ! class_exists( 'Checkview_WSF_Helper' ) ) {
 		 * @param integer $form_id form id.
 		 * @return array
 		 */
-		public function config_meta_keys( $meta_keys = array(), $form_id = 0 ) {
+		public function config_meta_keys( $meta_keys = array(), $form_id = 0 ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 			$meta_keys['honeypot'] = array();
 			return (array) $meta_keys;
 		}
@@ -131,21 +131,21 @@ if ( ! class_exists( 'Checkview_WSF_Helper' ) ) {
 		 * @param array  $action The action configuration.
 		 * @return bool
 		 */
-		public function checkview_inject_email( $to, $form, $submit, $action ) {
+		public function checkview_inject_email( $to, $form, $submit, $action ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 			// New: append-mode branch — deliver to BOTH real recipient and test inbox.
 			// WS Forms uses RFC 2822 format strings (e.g. `"CheckView" <addr>`).
 			// Use the shared dedup parser to handle the format correctly and
 			// avoid substring false positives.
-			if ( cv_should_allow_original_recipients() ) {
-				$test_addr = '"CheckView" <' . TEST_EMAIL . '>';
+			if ( checkview_should_allow_original_recipients() ) {
+				$test_addr = '"CheckView" <' . CHECKVIEW_TEST_EMAIL . '>';
 				// Sanitize before any concat to prevent header injection from
 				// customer-provided recipient strings.
 				if ( is_array( $to ) ) {
-					$to = array_map( 'cv_sanitize_crlf', $to );
+					$to = array_map( 'checkview_sanitize_crlf', $to );
 				} else {
-					$to = cv_sanitize_crlf( (string) $to );
+					$to = checkview_sanitize_crlf( (string) $to );
 				}
-				if ( ! cv_recipients_contain_test_email( $to ) ) {
+				if ( ! checkview_recipients_contain_test_email( $to ) ) {
 					if ( is_array( $to ) ) {
 						$to[] = $test_addr;
 					} else {
@@ -156,15 +156,15 @@ if ( ! class_exists( 'Checkview_WSF_Helper' ) ) {
 				return $to;
 			}
 
-			$cv_test_id = get_checkview_test_id();
-			if ( ! $cv_test_id || 'true' != get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
+			$cv_test_id = checkview_get_test_id();
+			if ( ! $cv_test_id || 'true' !== get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
 				$to = array(
-					'"CheckView" <' . TEST_EMAIL . '>',
+					'"CheckView" <' . CHECKVIEW_TEST_EMAIL . '>',
 				);
 			} elseif ( is_array( $to ) ) {
-				$to[] = '"CheckView" <' . TEST_EMAIL . '>';
+				$to[] = '"CheckView" <' . CHECKVIEW_TEST_EMAIL . '>';
 			} else {
-				$to .= ', "CheckView" <' . TEST_EMAIL . '>';
+				$to .= ', "CheckView" <' . CHECKVIEW_TEST_EMAIL . '>';
 			}
 
 			Checkview_Admin_Logs::add( 'ip-logs', 'Submission recipient email address: ' . wp_json_encode( $to ) );
@@ -179,17 +179,17 @@ if ( ! class_exists( 'Checkview_WSF_Helper' ) ) {
 		 * @param array  $config The action configuration.
 		 * @return array
 		 */
-		public function checkview_remove_email_header( $headers, $form, $submit_parse, $config ) {
+		public function checkview_remove_email_header( $headers, $form, $submit_parse, $config ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 			// Append-mode: preserve original CC/BCC so customer's full recipient
 			// list receives the email. Inject Reply-To for MTA-variance defense.
-			if ( cv_should_allow_original_recipients() ) {
-				$headers = cv_inject_reply_to_header( $headers );
+			if ( checkview_should_allow_original_recipients() ) {
+				$headers = checkview_inject_reply_to_header( $headers );
 				Checkview_Admin_Logs::add( 'ip-logs', 'Append-mode submission email headers (CC/BCC preserved): ' . wp_json_encode( $headers ) );
 				return $headers;
 			}
 
-			$cv_test_id = get_checkview_test_id();
-			if ( $cv_test_id && 'true' == get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
+			$cv_test_id = checkview_get_test_id();
+			if ( $cv_test_id && 'true' === get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
 				return $headers;
 			}
 			// Ensure headers are an array.
@@ -221,9 +221,9 @@ if ( ! class_exists( 'Checkview_WSF_Helper' ) ) {
 		public function checkview_clone_entry( $form_data ) {
 			global $wpdb;
 
-			$form_id  = $form_data->form_id;
-			$entry_id = $form_data->id;
-			$checkview_test_id = get_checkview_test_id();
+			$form_id           = $form_data->form_id;
+			$entry_id          = $form_data->id;
+			$checkview_test_id = checkview_get_test_id();
 
 			Checkview_Admin_Logs::add( 'ip-logs', 'Cloning submission entry [' . $entry_id . ']...' );
 
@@ -233,13 +233,13 @@ if ( ! class_exists( 'Checkview_WSF_Helper' ) ) {
 
 			// Insert Entry.
 			$entry_data  = array(
-				'form_id' => $form_id,
-				'status' => 'publish',
-				'source_url' => isset( $_SERVER['HTTP_REFERER'] ) ? substr( sanitize_url( wp_unslash( $_SERVER['HTTP_REFERER'] ) ), 0, 200 ) : '',
+				'form_id'      => $form_id,
+				'status'       => 'publish',
+				'source_url'   => isset( $_SERVER['HTTP_REFERER'] ) ? substr( sanitize_url( wp_unslash( $_SERVER['HTTP_REFERER'] ) ), 0, 200 ) : '',
 				'date_created' => current_time( 'mysql' ),
 				'date_updated' => current_time( 'mysql' ),
-				'uid' => $checkview_test_id,
-				'form_type' => 'WSForms',
+				'uid'          => $checkview_test_id,
+				'form_type'    => 'WSForms',
 			);
 			$entry_table = $wpdb->prefix . 'cv_entry';
 
@@ -253,45 +253,45 @@ if ( ! class_exists( 'Checkview_WSF_Helper' ) ) {
 
 			// Skip meta loop when parent insert failed: $wpdb->insert_id
 			// is 0, meta rows would be orphaned with entry_id=0.
-			// WSF cv_update_option + complete_checkview_test() below still runs.
+			// WSF checkview_update_option + checkview_complete_test() below still runs.
 			if ( $result ) {
 				$entry_meta_table = $wpdb->prefix . 'cv_entry_meta';
 				$field_id_prefix  = 'wsf';
-				$tablename = $wpdb->prefix . 'wsf_submit_meta';
-				$form_fields = $wpdb->get_results( $wpdb->prepare( 'Select * from ' . $tablename . ' where parent_id=%d', $entry_id ) );
-				$count = 0;
+				$tablename        = $wpdb->prefix . 'wsf_submit_meta';
+				$form_fields      = $wpdb->get_results( $wpdb->prepare( 'Select * from %i where parent_id=%d', $tablename, $entry_id ) );
+				$count            = 0;
 
 				foreach ( $form_fields as $field ) {
-					if ( ! in_array( $field->meta_key, array( '_form_id', 'post_id', 'wsf_meta_key_hidden' ) ) ) {
+					if ( ! in_array( $field->meta_key, array( '_form_id', 'post_id', 'wsf_meta_key_hidden' ), true ) ) {
 						$entry_metadata = array(
-							'uid' => $checkview_test_id,
-							'form_id' => $form_id,
-							'entry_id' => $entry_id,
-							'meta_key' => checkview_truncate_meta_key( $field_id_prefix . str_replace( '_', '-', $field->meta_key ) ),
+							'uid'        => $checkview_test_id,
+							'form_id'    => $form_id,
+							'entry_id'   => $entry_id,
+							// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
+							'meta_key'   => checkview_truncate_meta_key( $field_id_prefix . str_replace( '_', '-', $field->meta_key ) ),
 							'meta_value' => $field->meta_value,
+							// phpcs:enable WordPress.DB.SlowDBQuery
 						);
 
 						$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 						if ( $result ) {
-							$count++;
+							++$count;
 						}
 					}
 				}
 
 				if ( $count > 0 ) {
 					Checkview_Admin_Logs::add( 'ip-logs', 'Cloned submission entry meta data (inserted ' . $count . ' rows into ' . $entry_meta_table . ').' );
-				} else {
-					if ( count( $form_fields ) > 0 ) {
+				} elseif ( count( $form_fields ) > 0 ) {
 						Checkview_Admin_Logs::add( 'ip-logs', 'Failed to clone submission entry meta data. wpdb->last_error=[' . $wpdb->last_error . ']' );
-					}
 				}
 			}
 
-			cv_update_option( $checkview_test_id . '_wsf_entry_id', $entry_id );
-			cv_update_option( $checkview_test_id . '_wsf_frm_id', $form_id );
+			checkview_update_option( $checkview_test_id . '_wsf_entry_id', $entry_id );
+			checkview_update_option( $checkview_test_id . '_wsf_frm_id', $form_id );
 
-			complete_checkview_test( $checkview_test_id );
+			checkview_complete_test( $checkview_test_id );
 		}
 
 		/**
@@ -302,11 +302,10 @@ if ( ! class_exists( 'Checkview_WSF_Helper' ) ) {
 		 * @param bool  $preview Boolean Whether the form rendering is in preview mode.
 		 * @return Object Form object.
 		 */
-		public function checkview_remove_unwanted_fields( $form, $preview ) {
+		public function checkview_remove_unwanted_fields( $form, $preview ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 			$fields = WS_Form_Common::get_fields_from_form( $form, true );
 			// Process fields.
 			foreach ( $fields as $field ) {
-
 				if ( ! isset( $field->type ) ) {
 					continue;
 				}
@@ -344,8 +343,8 @@ if ( ! class_exists( 'Checkview_WSF_Helper' ) ) {
 			if ( in_array( $config['id'], $skip_actions, true ) ) {
 				return true;
 			}
-			$cv_test_id = get_checkview_test_id();
-			if ( $cv_test_id && 'true' == get_option( 'disable_actions_' . $cv_test_id, false ) ) {
+			$cv_test_id = checkview_get_test_id();
+			if ( $cv_test_id && 'true' === get_option( 'disable_actions_' . $cv_test_id, false ) ) {
 				Checkview_Admin_Logs::add(
 					'ip-logs',
 					'Disabled WSF action type [' . ( $config['id'] ?? 'unknown' ) . '] for CheckView test.'

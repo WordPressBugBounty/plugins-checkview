@@ -49,10 +49,10 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 		public function __construct() {
 			$this->loader = new Checkview_Loader();
 
-			$cv_test_id = get_checkview_test_id();
+			$cv_test_id = checkview_get_test_id();
 
 			// Change Email address to our test email.
-			if ( defined( 'TEST_EMAIL' ) && ( ! $cv_test_id || 'true' != get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) ) {
+			if ( defined( 'CHECKVIEW_TEST_EMAIL' ) && ( ! $cv_test_id || 'true' !== get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) ) {
 				add_filter(
 					'fluentform/email_to',
 					array( $this, 'checkview_remove_receipt' ),
@@ -68,7 +68,7 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 			// the disable flag silently dropped the MTA-variance defense for that
 			// combination. The callback is branch-aware and leaves headers
 			// untouched in the disable path.
-			if ( defined( 'TEST_EMAIL' ) ) {
+			if ( defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
 				add_filter(
 					'fluentform/email_template_header',
 					array( $this, 'checkview_remove_email_header' ),
@@ -78,7 +78,7 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 			}
 
 			// Disable email recipients.
-			if ( defined( 'TEST_EMAIL' ) && $cv_test_id && 'true' == get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
+			if ( defined( 'CHECKVIEW_TEST_EMAIL' ) && $cv_test_id && 'true' === get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
 				add_filter(
 					'fluentform/email_to',
 					array( $this, 'checkview_inject_email' ),
@@ -91,7 +91,7 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 			// to avoid same-priority dual-callback race. The `email_to` callbacks
 			// (`checkview_remove_receipt` and `checkview_inject_email`) are
 			// internally branch-aware and switch to append-semantics when
-			// `cv_should_allow_original_recipients()` returns true.
+			// `checkview_should_allow_original_recipients()` returns true.
 
 			// Use before_submission_confirmation instead of submission_inserted because
 			// Fluent Forms wraps submission_inserted in a try-catch that silently
@@ -144,7 +144,7 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 
 			add_filter(
 				'fluentform/recaptcha_v3_ref_score',
-				function ( $score ) {
+				function () {
 					return -8;
 				},
 				99,
@@ -152,6 +152,33 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 
 			// Bypass hCaptcha.
 			add_filter( 'hcap_activate', '__return_false' );
+
+			// WP Armour — Honeypot Anti Spam.
+			//
+			// Unlike every other anti-spam integration this helper handles, WP
+			// Armour's Fluent Forms callback cannot be neutralised by any filter:
+			// on a spam verdict it calls wp_send_json_error() and wp_die()
+			// (honeypot/includes/integration/wpa_fluentform.php:6-14), terminating
+			// the request. There is no return value to override, so unhooking is
+			// the only remedy.
+			//
+			// It is also registered OUTSIDE WP Armour's `! is_admin()` gate
+			// (wp-armour.php:30), so unlike its Gravity Forms and Formidable
+			// integrations it fires on admin-ajax — which is exactly where Fluent
+			// Forms submits.
+			//
+			// Its check fails closed: wpa_check_is_spam()
+			// (honeypot/includes/wpa_functions.php:136-153) treats a submission as
+			// spam UNLESS it carries WP Armour's JS-injected fields.
+			//
+			// Registered on `init` at PHP_INT_MAX because WP Armour includes its
+			// integrations from an `init` callback at the default priority
+			// (wp-armour.php:17-32), the same priority this helper is loaded at.
+			add_action(
+				'init',
+				array( $this, 'checkview_unhook_wp_armour' ),
+				PHP_INT_MAX
+			);
 
 			// Bypass Akismet.
 			add_filter(
@@ -197,55 +224,89 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 
 			add_filter(
 				'fluentform/rendering_field_html_input_checkbox',
-				array($this, 'static_ids'),
+				array( $this, 'static_ids' ),
 				99
 			);
 
 			add_filter(
 				'fluentform/rendering_field_html_terms_and_condition',
-				array($this, 'static_ids'),
+				array( $this, 'static_ids' ),
 				99
 			);
 
 			add_filter(
 				'fluentform/rendering_field_html_gdpr_agreement',
-				array($this, 'static_ids'),
+				array( $this, 'static_ids' ),
 				99
 			);
 
 			add_filter(
 				'fluentform/rendering_field_html_input_radio',
-				array($this, 'static_ids'),
+				array( $this, 'static_ids' ),
 				99
 			);
 		}
 
 		/**
+		 * Removes WP Armour's Fluent Forms submission callback for this request.
+		 *
+		 * Both hook spellings are attempted. WP Armour currently registers the
+		 * slash-style `fluentform/before_insert_submission` and leaves the legacy
+		 * underscore spelling commented out, but Fluent renamed these hooks at
+		 * 4.3.22 and WP Armour has shipped both, so removing either is cheap
+		 * insurance.
+		 *
+		 * Degrades to a logged no-op.
+		 *
+		 * @since 2.3.0
+		 *
+		 * @return void
+		 */
+		public function checkview_unhook_wp_armour() {
+			$removed = 0;
+
+			foreach ( array( 'fluentform/before_insert_submission', 'fluentform_before_insert_submission' ) as $hook ) {
+				if ( remove_action( $hook, 'wpa_fluent_form_extra_validation', 10 ) ) {
+					++$removed;
+				}
+			}
+
+			if ( $removed > 0 ) {
+				Checkview_Admin_Logs::add( 'ip-logs', 'Unhooked WP Armour from [' . $removed . '] Fluent Forms submission hook(s) for this CheckView test.' );
+				return;
+			}
+
+			if ( function_exists( 'wpa_fluent_form_extra_validation' ) ) {
+				Checkview_Admin_Logs::add( 'ip-logs', 'WP Armour detected but its Fluent Forms callback was not removable (priority changed or renamed?) — submissions may still be terminated as spam.' );
+			}
+		}
+
+		/**
 		 * Appends our test email for test form submissions.
 		 *
-		 * Branch-aware: in append-mode (`cv_should_allow_original_recipients()`
+		 * Branch-aware: in append-mode (`checkview_should_allow_original_recipients()`
 		 * returns true), uses dedup-protected append. Otherwise preserves
 		 * existing partial-append behavior.
 		 *
 		 * @param string|array $address Email address.
-		 * @param string $notification Email notification.
-		 * @param array  $submitted_data Fluent Forms submitted data.
-		 * @param object $form Fluent Forms form object.
+		 * @param string       $notification Email notification.
+		 * @param array        $submitted_data Fluent Forms submitted data.
+		 * @param object       $form Fluent Forms form object.
 		 * @return string|array Email.
 		 */
-		public function checkview_inject_email( $address, $notification, $submitted_data, $form ) {
-			if ( cv_should_allow_original_recipients() ) {
+		public function checkview_inject_email( $address, $notification, $submitted_data, $form ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
+			if ( checkview_should_allow_original_recipients() ) {
 				$address = is_array( $address )
-					? cv_append_test_email_array( $address )
-					: cv_append_test_email_string( $address );
+					? checkview_append_test_email_array( $address )
+					: checkview_append_test_email_string( $address );
 				Checkview_Admin_Logs::add( 'ip-logs', 'Append-mode submission recipient email address: ' . wp_json_encode( $address ) );
 				return $address;
 			}
 
 			if ( is_array( $address ) ) {
-				$address[] = TEST_EMAIL;
+				$address[] = CHECKVIEW_TEST_EMAIL;
 			} else {
-				$address .= ', ' . TEST_EMAIL;
+				$address .= ', ' . CHECKVIEW_TEST_EMAIL;
 			}
 
 			Checkview_Admin_Logs::add( 'ip-logs', 'Submission recipient email address: ' . wp_json_encode( $address ) );
@@ -260,22 +321,22 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 		 * replace behavior.
 		 *
 		 * @param string|array $address Email address.
-		 * @param string $notification Email notification.
-		 * @param array  $submitted_data Fluent Forms submitted data.
-		 * @param object $form Fluent Forms form object.
+		 * @param string       $notification Email notification.
+		 * @param array        $submitted_data Fluent Forms submitted data.
+		 * @param object       $form Fluent Forms form object.
 		 * @return string|array Email.
 		 */
-		public function checkview_remove_receipt( $address, $notification, $submitted_data, $form ) {
-			if ( cv_should_allow_original_recipients() ) {
+		public function checkview_remove_receipt( $address, $notification, $submitted_data, $form ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
+			if ( checkview_should_allow_original_recipients() ) {
 				$address = is_array( $address )
-					? cv_append_test_email_array( $address )
-					: cv_append_test_email_string( $address );
+					? checkview_append_test_email_array( $address )
+					: checkview_append_test_email_string( $address );
 				Checkview_Admin_Logs::add( 'ip-logs', 'Append-mode submission recipient email address: ' . wp_json_encode( $address ) );
 				return $address;
 			}
 
-			Checkview_Admin_Logs::add( 'ip-logs', 'Submission recipient email address: ' . wp_json_encode( TEST_EMAIL ) );
-			return TEST_EMAIL;
+			Checkview_Admin_Logs::add( 'ip-logs', 'Submission recipient email address: ' . wp_json_encode( CHECKVIEW_TEST_EMAIL ) );
+			return CHECKVIEW_TEST_EMAIL;
 		}
 
 
@@ -286,15 +347,15 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 		 * @param array $notification .notifications.
 		 * @return array
 		 */
-		public function checkview_remove_email_header( array $headers, array $notification ): array {
+		public function checkview_remove_email_header( array $headers, array $notification ): array { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 			// Append-mode: preserve original CC/BCC so customer's full
 			// recipient list still receives the email (matches the design
 			// intent that allow_original_recipients delivers to "everyone
 			// configured in the form"). Inject Reply-To here too — single
 			// callback avoids the same-priority race that splitting into
 			// two callbacks would create.
-			if ( cv_should_allow_original_recipients() ) {
-				$headers = cv_inject_reply_to_header( $headers );
+			if ( checkview_should_allow_original_recipients() ) {
+				$headers = checkview_inject_reply_to_header( $headers );
 				Checkview_Admin_Logs::add( 'ip-logs', 'Append-mode submission email headers (CC/BCC preserved): ' . wp_json_encode( $headers ) );
 				return $headers;
 			}
@@ -302,8 +363,8 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 			// Disable-receipt path: the email is already being redirected wholesale,
 			// so leave headers alone. Matches the pre-existing behavior from when
 			// this filter was only registered outside the disable branch.
-			$cv_test_id = get_checkview_test_id();
-			if ( $cv_test_id && 'true' == get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
+			$cv_test_id = checkview_get_test_id();
+			if ( $cv_test_id && 'true' === get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
 				return $headers;
 			}
 
@@ -344,7 +405,7 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 
 			// Guard against double execution (e.g., edge-case payment flows).
 			static $processed = array();
-			$key = $entry_id . '_' . $form->id;
+			$key              = $entry_id . '_' . $form->id;
 			if ( isset( $processed[ $key ] ) ) {
 				return;
 			}
@@ -352,17 +413,17 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 
 			Checkview_Admin_Logs::add( 'ip-logs', 'Cloning submission entry [' . $entry_id . ']...' );
 
-			$form_id = $form->id;
-			$checkview_test_id = get_checkview_test_id();
+			$form_id           = $form->id;
+			$checkview_test_id = checkview_get_test_id();
 
 			if ( empty( $checkview_test_id ) ) {
 				$checkview_test_id = $form_id . gmdate( 'Ymd' );
 			}
 
 			// Clone entry to check view tables.
-			$tablename = $wpdb->prefix . 'fluentform_entry_details';
-			$rows = $wpdb->get_results( $wpdb->prepare( 'Select * from ' . $tablename . ' where submission_id=%d and form_id=%d order by id ASC', $entry_id, $form_id ) );
-			$count = 0;
+			$tablename        = $wpdb->prefix . 'fluentform_entry_details';
+			$rows             = $wpdb->get_results( $wpdb->prepare( 'Select * from %i where submission_id=%d and form_id=%d order by id ASC', $tablename, $entry_id, $form_id ) );
+			$count            = 0;
 			$entry_meta_table = $wpdb->prefix . 'cv_entry_meta';
 
 			foreach ( $rows as $row ) {
@@ -372,42 +433,42 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 					$meta_key .= '_' . $row->sub_field_name . '_';
 				}
 
-				$data  = array(
+				$data = array(
 					'uid'        => $checkview_test_id,
 					'form_id'    => $form_id,
 					'entry_id'   => $row->submission_id,
+					// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
 					'meta_key'   => checkview_truncate_meta_key( $meta_key ),
 					'meta_value' => $row->field_value,
+					// phpcs:enable WordPress.DB.SlowDBQuery
 				);
 
 				$result = $wpdb->insert( $entry_meta_table, $data );
 
 				if ( $result ) {
-					$count++;
+					++$count;
 				}
 			}
 
 			if ( $count > 0 ) {
 				Checkview_Admin_Logs::add( 'ip-logs', 'Cloned submission entry meta data (inserted ' . $count . ' rows into ' . $entry_meta_table . ').' );
-			} else {
-				if ( count( $rows ) > 0 ) {
+			} elseif ( count( $rows ) > 0 ) {
 					Checkview_Admin_Logs::add( 'ip-logs', 'Failed to clone submission entry meta data. wpdb->last_error=[' . $wpdb->last_error . ']' );
-				}
 			}
 
-			$tablename = $wpdb->prefix . 'fluentform_submissions';
-			$row = $wpdb->get_row( $wpdb->prepare( 'Select * from ' . $tablename . ' where id=%d and form_id=%d LIMIT 1', $entry_id, $form_id ), ARRAY_A );
+			$tablename   = $wpdb->prefix . 'fluentform_submissions';
+			$row         = $wpdb->get_row( $wpdb->prepare( 'Select * from %i where id=%d and form_id=%d LIMIT 1', $tablename, $entry_id, $form_id ), ARRAY_A );
 			$entry_table = $wpdb->prefix . 'cv_entry';
-			$data = array(
-				'uid' => $checkview_test_id,
-				'form_type' => 'FluentForms',
-				'form_id' => $form_id,
-				'source_url' => isset( $row['source_url'] ) ? substr( $row['source_url'], 0, 200 ) : 'n/a',
-				'response' => isset( $row['response'] ) ? $row['response'] : 'n/a',
-				'user_agent' => isset( $row['browser'] ) ? $row['browser'] : 'n/a',
-				'ip' => isset( $row['ip'] ) ? $row['ip'] : 'n/a',
-				'date_created' => isset( $row['created_at'] ) ? $row['created_at'] : 'n/a',
-				'date_updated' => isset( $row['updated_at'] ) ? $row['updated_at'] : 'n/a',
+			$data        = array(
+				'uid'            => $checkview_test_id,
+				'form_type'      => 'FluentForms',
+				'form_id'        => $form_id,
+				'source_url'     => isset( $row['source_url'] ) ? substr( $row['source_url'], 0, 200 ) : 'n/a',
+				'response'       => isset( $row['response'] ) ? $row['response'] : 'n/a',
+				'user_agent'     => isset( $row['browser'] ) ? $row['browser'] : 'n/a',
+				'ip'             => isset( $row['ip'] ) ? $row['ip'] : 'n/a',
+				'date_created'   => isset( $row['created_at'] ) ? $row['created_at'] : 'n/a',
+				'date_updated'   => isset( $row['updated_at'] ) ? $row['updated_at'] : 'n/a',
 				'payment_status' => isset( $row['payment_status'] ) ? $row['payment_status'] : 'n/a',
 				'payment_method' => isset( $row['payment_method'] ) ? $row['payment_method'] : 'n/a',
 				'payment_amount' => isset( $row['payment_total'] ) ? $row['payment_total'] : 0,
@@ -455,7 +516,7 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 					->delete();
 			}
 
-			complete_checkview_test( $checkview_test_id );
+			checkview_complete_test( $checkview_test_id );
 		}
 
 		/**
@@ -465,8 +526,8 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 		 * @param int   $form_id form id.
 		 * @return array
 		 */
-		public function checkview_disable_form_actions( $notifications, $form_id ) {
-			$cv_test_id = get_checkview_test_id();
+		public function checkview_disable_form_actions( $notifications, $form_id ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
+			$cv_test_id = checkview_get_test_id();
 			if ( ! $cv_test_id || 'true' !== get_option( 'disable_actions_' . $cv_test_id, false ) ) {
 				return $notifications;
 			}
@@ -501,26 +562,26 @@ if ( ! class_exists( 'Checkview_Fluent_Forms_Helper' ) ) {
 		/**
 		 * Replace IDs for checkbox/radio inputs & labels with static IDs based on incremental counter.
 		 *
-		 * @param $html Input's HTML.
+		 * @param string $html Input's HTML.
 		 *
 		 * @return string Modified HTML.
 		 */
-		public static function static_ids($html) {
-			$map = [];
+		public static function static_ids( $html ) {
+			$map = array();
 
-			// Build map of old IDs to new IDs
-			preg_match_all('/\bid=[\'"]([^\'"]+)[\'"]/', $html, $matches);
-			foreach ($matches[1] as $oldId) {
-				if (!isset($map[$oldId])) {
-					$map[$oldId] = 'ff_checkable_' . (++self::$counter);
+			// Build map of old IDs to new IDs.
+			preg_match_all( '/\bid=[\'"]([^\'"]+)[\'"]/', $html, $matches );
+			foreach ( $matches[1] as $old_id ) {
+				if ( ! isset( $map[ $old_id ] ) ) {
+					$map[ $old_id ] = 'ff_checkable_' . ( ++self::$counter );
 				}
 			}
 
-			// Replace both id= and for= attributes
-			foreach ($map as $oldId => $newId) {
+			// Replace both id= and for= attributes.
+			foreach ( $map as $old_id => $new_id ) {
 				$html = str_replace(
-					['id="' . $oldId . '"', "id='" . $oldId . "'", 'for="' . $oldId . '"', "for='" . $oldId . "'"],
-					['id="' . $newId . '"', "id='" . $newId . "'", 'for="' . $newId . '"', "for='" . $newId . "'"],
+					array( 'id="' . $old_id . '"', "id='" . $old_id . "'", 'for="' . $old_id . '"', "for='" . $old_id . "'" ),
+					array( 'id="' . $new_id . '"', "id='" . $new_id . "'", 'for="' . $new_id . '"', "for='" . $new_id . "'" ),
 					$html
 				);
 			}

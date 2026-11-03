@@ -16,6 +16,17 @@
     "ext-json": "*"
   },
   "config": {
-    "vendor-dir": "includes/vendor"
+    "vendor-dir": "includes/vendor",
+    "optimize-autoloader": true
+  },
+  "scripts": {
+    "tools":  "@composer install --working-dir=tools/phpcs",
+    "lint":   "tools/phpcs/vendor/bin/phpcs",
+    "format": "tools/phpcs/vendor/bin/phpcbf"
+  },
+  "scripts-descriptions": {
+    "tools":  "Install dev-only PHPCS tooling into tools/phpcs/vendor.",
+    "lint":   "Run PHPCS (requires composer tools).",
+    "format": "Run PHPCBF (requires composer tools)."
   }
 }

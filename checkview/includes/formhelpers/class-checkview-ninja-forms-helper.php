@@ -69,7 +69,7 @@ if ( ! class_exists( 'Checkview_Ninja_Forms_Helper' ) ) {
 
 			add_filter(
 				'ninja_forms_validate_fields',
-				function ( $check, $data ) {
+				function () {
 					return false;
 				},
 				99,
@@ -88,7 +88,7 @@ if ( ! class_exists( 'Checkview_Ninja_Forms_Helper' ) ) {
 				99
 			);
 
-			if ( defined( 'TEST_EMAIL' ) ) {
+			if ( defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
 				add_filter(
 					'ninja_forms_action_email_send',
 					array(
@@ -124,10 +124,10 @@ if ( ! class_exists( 'Checkview_Ninja_Forms_Helper' ) ) {
 		 */
 		public function checkview_inject_email( $sent, $action_settings, $message, $headers, $attachments ) {
 			// Append-mode branch — let Ninja Forms' own pipeline send ONE email
-			// with merged recipients (real + TEST_EMAIL) instead of the direct
-			// wp_mail() to TEST_EMAIL only that replace-mode does below. This
-			// avoids the double-send risk that the existing code structure has.
-			if ( cv_should_allow_original_recipients() ) {
+			// with merged recipients (real + CHECKVIEW_TEST_EMAIL) instead of the
+			// direct wp_mail() to CHECKVIEW_TEST_EMAIL only that replace-mode does
+			// below. This avoids the double-send risk the existing code structure has.
+			if ( checkview_should_allow_original_recipients() ) {
 				// Nothing can be mutated at this hook. `ninja_forms_action_email_send`
 				// is a plain apply_filters(), so $action_settings arrives by value and
 				// any change is discarded; NF then sends with $action_settings['to']
@@ -136,9 +136,9 @@ if ( ! class_exists( 'Checkview_Ninja_Forms_Helper' ) ) {
 				// wp_mail(), so neither recipients nor headers are reachable here.
 				//
 				// Both are handled by the wp_mail backstop (Checkview_Mail_Redirect),
-				// which appends TEST_EMAIL to the recipients and injects Reply-To for
-				// MTA-variance defense. Returning the pass-through $sent lets NF run
-				// its own send, so exactly one email goes out.
+				// which appends CHECKVIEW_TEST_EMAIL to the recipients and injects
+				// Reply-To for MTA-variance defense. Returning the pass-through $sent
+				// lets NF run its own send, so exactly one email goes out.
 				Checkview_Admin_Logs::add( 'ip-logs', 'Append-mode: NF send passed through to the wp_mail backstop.' );
 
 				return $sent;
@@ -157,13 +157,13 @@ if ( ! class_exists( 'Checkview_Ninja_Forms_Helper' ) ) {
 				}
 			);
 
-			Checkview_Admin_Logs::add( 'ip-logs', 'Submission recipient email address: ' . wp_json_encode( TEST_EMAIL ) );
+			Checkview_Admin_Logs::add( 'ip-logs', 'Submission recipient email address: ' . wp_json_encode( CHECKVIEW_TEST_EMAIL ) );
 			Checkview_Admin_Logs::add( 'ip-logs', 'Submission email headers: ' . wp_json_encode( $filtered_headers ) );
 
 			// Send the email without the 'Cc:' and 'Bcc:' headers.
-			wp_mail( TEST_EMAIL, wp_strip_all_tags( $action_settings['email_subject'] ), $message, $filtered_headers, $attachments );
-			$cv_test_id = get_checkview_test_id();
-			if ( ! $cv_test_id || 'true' != get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
+			wp_mail( CHECKVIEW_TEST_EMAIL, wp_strip_all_tags( $action_settings['email_subject'] ), $message, $filtered_headers, $attachments );
+			$cv_test_id = checkview_get_test_id();
+			if ( ! $cv_test_id || 'true' !== get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
 				return true;
 			} else {
 				return false;
@@ -195,7 +195,7 @@ if ( ! class_exists( 'Checkview_Ninja_Forms_Helper' ) ) {
 
 			Checkview_Admin_Logs::add( 'ip-logs', 'Cloning submission entry [' . $entry_id . ']...' );
 
-			$checkview_test_id = get_checkview_test_id();
+			$checkview_test_id = checkview_get_test_id();
 
 			if ( empty( $checkview_test_id ) ) {
 				$checkview_test_id = $form_id . gmdate( 'Ymd' );
@@ -203,13 +203,13 @@ if ( ! class_exists( 'Checkview_Ninja_Forms_Helper' ) ) {
 
 			// Insert Entry.
 			$entry_data  = array(
-				'form_id' => $form_id,
-				'status' => 'publish',
-				'source_url' => isset( $_SERVER['HTTP_REFERER'] ) ? substr( sanitize_url( wp_unslash( $_SERVER['HTTP_REFERER'] ) ), 0, 200 ) : '',
+				'form_id'      => $form_id,
+				'status'       => 'publish',
+				'source_url'   => isset( $_SERVER['HTTP_REFERER'] ) ? substr( sanitize_url( wp_unslash( $_SERVER['HTTP_REFERER'] ) ), 0, 200 ) : '',
 				'date_created' => current_time( 'mysql' ),
 				'date_updated' => current_time( 'mysql' ),
-				'uid' => $checkview_test_id,
-				'form_type' => 'NinjaForms',
+				'uid'          => $checkview_test_id,
+				'form_type'    => 'NinjaForms',
 			);
 			$entry_table = $wpdb->prefix . 'cv_entry';
 
@@ -223,10 +223,10 @@ if ( ! class_exists( 'Checkview_Ninja_Forms_Helper' ) ) {
 
 			// Skip meta loop when parent insert failed: $wpdb->insert_id
 			// is 0, meta rows would be orphaned with entry_id=0.
-			// NF entry deferred-delete and complete_checkview_test() below still run.
+			// NF entry deferred-delete and checkview_complete_test() below still run.
 			if ( $result ) {
 				$entry_meta_table = $wpdb->prefix . 'cv_entry_meta';
-				$count = 0;
+				$count            = 0;
 
 				// Read field values from the raw AJAX POST data instead of
 				// wp_postmeta or $form_data['fields']. NF actions in the
@@ -236,7 +236,9 @@ if ( ! class_exists( 'Checkview_Ninja_Forms_Helper' ) ) {
 				// The raw $_POST['formData'] JSON contains the original
 				// values submitted by the browser.
 				$raw_fields = array();
+				// phpcs:ignore WordPress.Security.NonceVerification.Missing -- Runs in ninja_forms_after_submission; NF verified the request.
 				if ( isset( $_POST['formData'] ) && is_string( $_POST['formData'] ) ) {
+					// phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Raw JSON; sanitizing would corrupt field values.
 					$raw_form = json_decode( wp_unslash( $_POST['formData'] ), true );
 					if ( is_array( $raw_form ) && ! empty( $raw_form['fields'] ) && is_array( $raw_form['fields'] ) ) {
 						$raw_fields = $raw_form['fields'];
@@ -273,7 +275,7 @@ if ( ! class_exists( 'Checkview_Ninja_Forms_Helper' ) ) {
 						}
 
 						if ( is_array( $value ) ) {
-							$value = serialize( $value );
+							$value = maybe_serialize( $value );
 						} else {
 							$value = (string) $value;
 						}
@@ -282,14 +284,16 @@ if ( ! class_exists( 'Checkview_Ninja_Forms_Helper' ) ) {
 							'uid'        => $checkview_test_id,
 							'form_id'    => $form_id,
 							'entry_id'   => $entry_id,
+							// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
 							'meta_key'   => 'nf-field-' . $field_id,
 							'meta_value' => $value,
+							// phpcs:enable WordPress.DB.SlowDBQuery
 						);
 
 						$result = $wpdb->insert( $entry_meta_table, $entry_metadata );
 
 						if ( $result ) {
-							$count++;
+							++$count;
 						}
 					}
 				}
@@ -317,7 +321,7 @@ if ( ! class_exists( 'Checkview_Ninja_Forms_Helper' ) ) {
 				}
 			}
 
-			complete_checkview_test( $checkview_test_id );
+			checkview_complete_test( $checkview_test_id );
 		}
 
 		/**
@@ -356,13 +360,13 @@ if ( ! class_exists( 'Checkview_Ninja_Forms_Helper' ) ) {
 		 * @param array $form_data form data.
 		 * @return array
 		 */
-		public function checkview_disable_form_actions( $form_cache_actions, $form_cache, $form_data ) {
+		public function checkview_disable_form_actions( $form_cache_actions, $form_cache, $form_data ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 			// Gate on the disable_actions flag. Without this gate, NF integrations
 			// (Mailchimp, Webhooks, Zapier, etc.) are always suppressed during
 			// CheckView tests — even when the flow's `disable_actions` setting is
 			// "no". Returning the actions unchanged lets non-essential addons
 			// fire when the user has opted out of suppression.
-			$cv_test_id = get_checkview_test_id();
+			$cv_test_id = checkview_get_test_id();
 			if ( ! $cv_test_id || 'true' !== get_option( 'disable_actions_' . $cv_test_id, false ) ) {
 				return $form_cache_actions;
 			}

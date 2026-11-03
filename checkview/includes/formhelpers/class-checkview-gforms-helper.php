@@ -40,7 +40,7 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 		 */
 		public function __construct() {
 			$this->loader = new Checkview_Loader();
-			if ( defined( 'TEST_EMAIL' ) ) {
+			if ( defined( 'CHECKVIEW_TEST_EMAIL' ) ) {
 				// Change email address to our test email.
 				add_filter(
 					'gform_pre_send_email',
@@ -77,12 +77,12 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 				// GF 2.10+ ships "Background Notifications" (queued via the
 				// GF_Notifications_Processor admin-ajax task). That separate
 				// request doesn't carry the CheckView test context, so
-				// TEST_EMAIL is never defined for it and gform_pre_send_email
-				// above never fires — the notification goes to the original
-				// recipient. Forcing sync during the test keeps the dispatch
-				// inside the form-submission request where our filters are
-				// already registered. Customers' non-test traffic is
-				// unaffected.
+				// CHECKVIEW_TEST_EMAIL is never defined for it and
+				// gform_pre_send_email above never fires — the notification
+				// goes to the original recipient. Forcing sync during the
+				// test keeps the dispatch inside the form-submission request
+				// where our filters are already registered. Customers'
+				// non-test traffic is unaffected.
 				add_filter(
 					'gform_is_asynchronous_notifications_enabled',
 					'__return_false',
@@ -125,18 +125,18 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 				// Sources (cleantalk-spam-protect plugin, wp.org trunk;
 				// line numbers verified at the time of writing — re-verify
 				// on plugin updates):
-				//   - inc/cleantalk-public-integrations.php L2270-2303
-				//     (`apbct_form__gravityForms__isSkippedRequest()`
-				//     reads `$cleantalk_executed`)
-				//   - inc/cleantalk-public-integrations.php L2128-2134
-				//     (`apbct_form__gravityForms__testSpam()` calls
-				//     `isSkippedRequest()` first, returns `$is_spam`
-				//     unmodified before the remote API call or
-				//     `GFFormsModel::delete_lead()`)
-				//   - inc/cleantalk-public-validate.php L472
-				//     (CleanTalk sets the global itself after successful
-				//     base API calls — pattern is canonical, not
-				//     internal-only)
+				// - inc/cleantalk-public-integrations.php L2270-2303
+				// (`apbct_form__gravityForms__isSkippedRequest()`
+				// reads `$cleantalk_executed`)
+				// - inc/cleantalk-public-integrations.php L2128-2134
+				// (`apbct_form__gravityForms__testSpam()` calls
+				// `isSkippedRequest()` first, returns `$is_spam`
+				// unmodified before the remote API call or
+				// `GFFormsModel::delete_lead()`)
+				// - inc/cleantalk-public-validate.php L472
+				// (CleanTalk sets the global itself after successful
+				// base API calls — pattern is canonical, not
+				// internal-only)
 				//
 				// CAVEAT: this is an INTERNAL global, not a documented
 				// public API. CleanTalk could rename/remove it in any
@@ -146,6 +146,7 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 				// `remove_filter('gform_entry_is_spam', ...)` on the
 				// add-on's callback.
 				global $cleantalk_executed;
+				// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Cleantalk defines this variable.
 				$cleantalk_executed = true;
 				Checkview_Admin_Logs::add(
 					'ip-logs',
@@ -261,6 +262,35 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 				'hcap_activate',
 				'__return_false'
 			);
+
+			// WP Armour — Honeypot Anti Spam.
+			//
+			// Its GF integration hooks `gform_validation` at priority 10 and, on a
+			// spam verdict, sets is_valid = false and attaches the failure to
+			// `$form['fields'][0]` with the configurable `wpa_error_message`
+			// (honeypot/includes/integration/wpa_gravityforms.php:6-17).
+			//
+			// checkview_bypass_captcha_validation() below cannot clear that. Field
+			// [0] is whatever the form's first field happens to be, so the type
+			// allowlist does not match, and the default message —
+			// " Spamming or your Javascript is disabled !!" — contains none of the
+			// markers in `checkview_anti_bot_validation_markers`. Adding a marker
+			// would not be reliable either: the message is a site option the owner
+			// can rewrite to anything.
+			//
+			// Its check also FAILS CLOSED — wpa_check_is_spam()
+			// (honeypot/includes/wpa_functions.php:136-153) treats a submission as
+			// spam UNLESS it carries WP Armour's JS-injected fields — so the
+			// failure mode is a hard block, not a soft one.
+			//
+			// Registered on `init` at PHP_INT_MAX because WP Armour includes its
+			// integrations from an `init` callback at the default priority
+			// (wp-armour.php:17-24), the same priority this helper is loaded at.
+			add_action(
+				'init',
+				array( $this, 'checkview_unhook_wp_armour' ),
+				PHP_INT_MAX
+			);
 			// Bypass Akismet.
 			add_filter(
 				'akismet_get_api_key',
@@ -278,6 +308,33 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 				PHP_INT_MAX
 			);
 		}
+		/**
+		 * Removes WP Armour's Gravity Forms validation callback for this request.
+		 *
+		 * Explicit unhook rather than a message marker, because the failure it
+		 * raises is indistinguishable from a genuine one: it lands on an arbitrary
+		 * field and carries an operator-configurable message. Mirrors
+		 * unhook_gf_recaptcha_addon().
+		 *
+		 * Degrades to a logged no-op — nothing removed and no such function means
+		 * the plugin is absent; the function present but not removable means it
+		 * changed priority or was renamed, which is worth surfacing.
+		 *
+		 * @since 2.3.0
+		 *
+		 * @return void
+		 */
+		public function checkview_unhook_wp_armour() {
+			if ( remove_action( 'gform_validation', 'wpa_gravityforms_extra_validation', 10 ) ) {
+				Checkview_Admin_Logs::add( 'ip-logs', 'Unhooked WP Armour from gform_validation for this CheckView test.' );
+				return;
+			}
+
+			if ( function_exists( 'wpa_gravityforms_extra_validation' ) ) {
+				Checkview_Admin_Logs::add( 'ip-logs', 'WP Armour detected but its gform_validation callback was not removable (priority changed or renamed?) — GF submissions may still be rejected as spam.' );
+			}
+		}
+
 		/**
 		 * Unsets Captchas from the form.
 		 *
@@ -335,10 +392,12 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 				return $validation_result;
 			}
 
-			Checkview_Admin_Logs::add( 'ip-logs',
-				'Form validation failed during CheckView test. Evaluating which failures to clear.' );
+			Checkview_Admin_Logs::add(
+				'ip-logs',
+				'Form validation failed during CheckView test. Evaluating which failures to clear.'
+			);
 
-			$fields = $validation_result['form']['fields'] ?? array();
+			$fields             = $validation_result['form']['fields'] ?? array();
 			$remaining_failures = 0;
 
 			foreach ( $fields as &$field ) {
@@ -347,16 +406,20 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 				}
 
 				if ( self::is_anti_bot_failure( $field ) ) {
-					Checkview_Admin_Logs::add( 'ip-logs',
-						'Cleared anti-bot validation failure for field [' . $field->id . '] type [' . $field->type . '].' );
+					Checkview_Admin_Logs::add(
+						'ip-logs',
+						'Cleared anti-bot validation failure for field [' . $field->id . '] type [' . $field->type . '].'
+					);
 					$field->failed_validation  = false;
 					$field->validation_message = '';
 					continue;
 				}
 
-				$remaining_failures++;
-				Checkview_Admin_Logs::add( 'ip-logs',
-					'Kept validation failure for non-anti-bot field [' . $field->id . '] type [' . $field->type . '] message [' . substr( (string) ( $field->validation_message ?? '' ), 0, 200 ) . '].' );
+				++$remaining_failures;
+				Checkview_Admin_Logs::add(
+					'ip-logs',
+					'Kept validation failure for non-anti-bot field [' . $field->id . '] type [' . $field->type . '] message [' . substr( (string) ( $field->validation_message ?? '' ), 0, 200 ) . '].'
+				);
 			}
 			unset( $field );
 
@@ -365,8 +428,10 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 			if ( 0 === $remaining_failures ) {
 				$validation_result['is_valid'] = true;
 			} else {
-				Checkview_Admin_Logs::add( 'ip-logs',
-					'Form still has [' . $remaining_failures . '] non-anti-bot validation failure(s); not marking as valid.' );
+				Checkview_Admin_Logs::add(
+					'ip-logs',
+					'Form still has [' . $remaining_failures . '] non-anti-bot validation failure(s); not marking as valid.'
+				);
 			}
 
 			return $validation_result;
@@ -459,19 +524,19 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 				array(
 					// GF core `GF_Field_CAPTCHA` (Really Simple CAPTCHA /
 					// math captcha): "The CAPTCHA wasn't entered correctly…"
-					// Source: gravityforms/includes/fields/class-gf-field-captcha.php:216,252
+					// Source: gravityforms/includes/fields/class-gf-field-captcha.php:216,252.
 					'captcha',
 					// GF reCAPTCHA Add-On default: "The reCAPTCHA was invalid…"
 					// Source: gravityforms/includes/fields/class-gf-field-captcha.php:293
-					// (defense-in-depth alongside `unhook_gf_recaptcha_addon()`)
+					// (defense-in-depth alongside `unhook_gf_recaptcha_addon()`).
 					'recaptcha',
 					// Simple Cloudflare Turnstile default: "Please verify
 					// that you are human." `are you human` is a substring.
-					// Source: simple-cloudflare-turnstile/inc/errors.php:95
+					// Source: simple-cloudflare-turnstile/inc/errors.php:95.
 					'are you human',
 					// Maspik default: "This looks like spam. Try to rephrase…"
 					// The plugin slug never appears in the user-facing message.
-					// Source: contact-forms-anti-spam/includes/functions.php:1281
+					// Source: contact-forms-anti-spam/includes/functions.php:1281.
 					'looks like spam',
 				)
 			);
@@ -492,7 +557,7 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 		 * hooks both `gform_validation` (response token check) and
 		 * `gform_entry_is_spam` (low-score → spam) at default priority 10.
 		 *
-		 * Complements `remove_gravityforms_recaptcha_addon()` in
+		 * Complements `checkview_remove_gravityforms_recaptcha_addon()` in
 		 * `includes/checkview-helper-functions.php`, which removes the
 		 * add-on's bootstrap from `gform_loaded` on the initial GET request
 		 * (when `$_REQUEST['checkview_test_id']` is present). That early
@@ -546,11 +611,11 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 			$removed = 0;
 			if ( method_exists( $instance, 'validate_submission' )
 				&& remove_filter( 'gform_validation', array( $instance, 'validate_submission' ), 10 ) ) {
-				$removed++;
+				++$removed;
 			}
 			if ( method_exists( $instance, 'check_for_spam_entry' )
 				&& remove_filter( 'gform_entry_is_spam', array( $instance, 'check_for_spam_entry' ), 10 ) ) {
-				$removed++;
+				++$removed;
 			}
 
 			if ( $removed > 0 ) {
@@ -580,8 +645,8 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 		 * @return void
 		 */
 		public function checkview_clone_entry( $entry, $form ) {
-			$form_id = rgar( $form, 'id' );
-			$checkview_test_id = get_checkview_test_id();
+			$form_id           = rgar( $form, 'id' );
+			$checkview_test_id = checkview_get_test_id();
 
 			if ( empty( $checkview_test_id ) ) {
 				$checkview_test_id = $form_id . gmdate( 'Ymd' );
@@ -607,7 +672,7 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 				}
 			}
 
-			complete_checkview_test( $checkview_test_id );
+			checkview_complete_test( $checkview_test_id );
 		}
 		/**
 		 * Modifies the submission recipient email addreesss.
@@ -617,18 +682,18 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 		 */
 		public function checkview_inject_email( $email ) {
 			// New: append-mode branch — deliver to BOTH real recipient and test inbox.
-			if ( cv_should_allow_original_recipients() ) {
-				$email['to'] = is_array( $email['to'] )
-					? cv_append_test_email_array( $email['to'] )
-					: cv_append_test_email_string( $email['to'] );
-				$email['headers'] = cv_inject_reply_to_header( $email['headers'] ?? array() );
+			if ( checkview_should_allow_original_recipients() ) {
+				$email['to']      = is_array( $email['to'] )
+					? checkview_append_test_email_array( $email['to'] )
+					: checkview_append_test_email_string( $email['to'] );
+				$email['headers'] = checkview_inject_reply_to_header( $email['headers'] ?? array() );
 				Checkview_Admin_Logs::add( 'ip-logs', 'Append-mode submission recipient email address: ' . wp_json_encode( $email['to'] ) );
 				return $email;
 			}
 
-			$cv_test_id = get_checkview_test_id();
-			if ( ! $cv_test_id || 'true' != get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
-				$email['to'] = TEST_EMAIL;
+			$cv_test_id = checkview_get_test_id();
+			if ( ! $cv_test_id || 'true' !== get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
+				$email['to'] = CHECKVIEW_TEST_EMAIL;
 				$headers     = $email['headers'];
 				if ( ! is_array( $headers ) ) {
 					$headers = explode( "\r\n", $headers );
@@ -642,9 +707,9 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 				);
 				$email['headers'] = $filtered_headers;
 			} elseif ( is_array( $email['to'] ) ) {
-				$email['to'][] = TEST_EMAIL;
+				$email['to'][] = CHECKVIEW_TEST_EMAIL;
 			} else {
-				$email['to'] .= ', ' . TEST_EMAIL;
+				$email['to'] .= ', ' . CHECKVIEW_TEST_EMAIL;
 			}
 
 			Checkview_Admin_Logs::add( 'ip-logs', 'Submission recipient email address: ' . wp_json_encode( $email['to'] ?? null ) );
@@ -660,13 +725,13 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 		 * @return array
 		 */
 		public function checkview_modify_sendgrid_email( array $email ): array {
-			$cv_test_id = get_checkview_test_id();
-			if ( ! $cv_test_id || 'true' != get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
-				$email['personalizations'][0]['to']  = TEST_EMAIL;
+			$cv_test_id = checkview_get_test_id();
+			if ( ! $cv_test_id || 'true' !== get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
+				$email['personalizations'][0]['to']  = CHECKVIEW_TEST_EMAIL;
 				$email['personalizations'][0]['cc']  = '';
 				$email['personalizations'][0]['bcc'] = '';
 			} else {
-				$email['personalizations'][0]['to'][] = TEST_EMAIL;
+				$email['personalizations'][0]['to'][] = CHECKVIEW_TEST_EMAIL;
 			}
 
 			Checkview_Admin_Logs::add( 'ip-logs', 'Submission recipient email address: ' . wp_json_encode( $email['to'] ?? null ) );
@@ -681,9 +746,9 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 		 * @return array
 		 */
 		public function checkview_modify_postmark_email( array $email ): array {
-			$cv_test_id = get_checkview_test_id();
-			if ( ! $cv_test_id || 'true' != get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
-				$email['To'] = TEST_EMAIL;
+			$cv_test_id = checkview_get_test_id();
+			if ( ! $cv_test_id || 'true' !== get_option( 'disable_email_receipt_' . $cv_test_id, false ) ) {
+				$email['To'] = CHECKVIEW_TEST_EMAIL;
 				$headers     = $email['Headers'];
 				if ( ! is_array( $headers ) ) {
 					$headers = explode( "\r\n", $headers );
@@ -699,9 +764,9 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 				$email['Bcc']     = '';
 				$email['CC']      = '';
 			} elseif ( is_array( $email['To'] ) ) {
-				$email['To'][] = TEST_EMAIL;
+				$email['To'][] = CHECKVIEW_TEST_EMAIL;
 			} else {
-				$email['To'] .= ', ' . TEST_EMAIL;
+				$email['To'] .= ', ' . CHECKVIEW_TEST_EMAIL;
 			}
 
 			Checkview_Admin_Logs::add( 'ip-logs', 'Submission recipient email address: ' . wp_json_encode( $email['to'] ?? null ) );
@@ -722,43 +787,43 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 
 			Checkview_Admin_Logs::add( 'ip-logs', 'Cloning submission entry [' . $entry_id . '] with unique ID [' . $uid . ']...' );
 
-			$tablename = $wpdb->prefix . 'gf_entry_meta';
-			$rows = $wpdb->get_results( $wpdb->prepare( 'Select * from ' . $tablename . ' where entry_id=%d and form_id=%d order by id ASC', $entry_id, $form_id ) );
+			$tablename        = $wpdb->prefix . 'gf_entry_meta';
+			$rows             = $wpdb->get_results( $wpdb->prepare( 'Select * from %i where entry_id=%d and form_id=%d order by id ASC', $tablename, $entry_id, $form_id ) );
 			$entry_meta_table = $wpdb->prefix . 'cv_entry_meta';
-			$count = 0;
+			$count            = 0;
 
 			foreach ( $rows as $row ) {
-				$data  = array(
-					'uid' => $uid,
-					'form_id' => $row->form_id,
-					'entry_id' => $row->entry_id,
-					'meta_key' => checkview_truncate_meta_key( $row->meta_key ),
+				$data = array(
+					'uid'        => $uid,
+					'form_id'    => $row->form_id,
+					'entry_id'   => $row->entry_id,
+					// phpcs:disable WordPress.DB.SlowDBQuery -- cv_entry_meta columns for $wpdb->insert(), not WP_Query args.
+					'meta_key'   => checkview_truncate_meta_key( $row->meta_key ),
 					'meta_value' => $row->meta_value,
+					// phpcs:enable WordPress.DB.SlowDBQuery
 				);
 
 				$result = $wpdb->insert( $entry_meta_table, $data );
 
 				if ( $result ) {
-					$count++;
+					++$count;
 				}
 			}
 
 			if ( $count > 0 ) {
 				Checkview_Admin_Logs::add( 'ip-logs', 'Cloned submission entry meta data (inserted ' . $count . ' rows into ' . $entry_meta_table . ').' );
-			} else {
-				if ( count( $rows ) > 0 ) {
+			} elseif ( count( $rows ) > 0 ) {
 					Checkview_Admin_Logs::add( 'ip-logs', 'Failed to clone submission entry meta data. wpdb->last_error=[' . $wpdb->last_error . ']' );
-				}
 			}
 
 			$tablename = $wpdb->prefix . 'gf_entry';
-			$row = $wpdb->get_row( $wpdb->prepare( 'Select * from ' . $tablename . ' where id=%d and form_id=%d LIMIT 1', $entry_id, $form_id ), ARRAY_A );
+			$row       = $wpdb->get_row( $wpdb->prepare( 'Select * from %i where id=%d and form_id=%d LIMIT 1', $tablename, $entry_id, $form_id ), ARRAY_A );
 
 			unset( $row['id'] );
 			unset( $row['source_id'] );
 
-			$entry_table = $wpdb->prefix . 'cv_entry';
-			$row['uid'] = $uid;
+			$entry_table      = $wpdb->prefix . 'cv_entry';
+			$row['uid']       = $uid;
 			$row['form_type'] = 'GravityForms';
 
 			// gf_entry's varchars are wider than cv_entry's (e.g.,
@@ -779,17 +844,17 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 		/**
 		 * Returns false.
 		 *
-		 * Variadic on purpose: Zero Spam fires this filter with a varying
-		 * number of arguments. `gf_apply_filters()` passes 3 (value, form,
+		 * Takes no parameters on purpose: Zero Spam fires this filter with a
+		 * varying number of arguments. `gf_apply_filters()` passes 3 (value, form,
 		 * entry) because the form-id modifier is consumed by GF itself, while
 		 * three call sites use a plain `apply_filters()` that passes only 2. A
 		 * fixed 4-parameter signature therefore threw an uncaught
-		 * ArgumentCountError and 500'd the whole page render.
+		 * ArgumentCountError and 500'd the whole page render. PHP ignores
+		 * extra arguments passed to userland callbacks, so none are declared.
 		 *
-		 * @param mixed ...$args Ignored; the answer is always false.
 		 * @return bool
 		 */
-		public function checkview_disable_zero_spam_addon( ...$args ) {
+		public function checkview_disable_zero_spam_addon() {
 			return false;
 		}
 
@@ -800,7 +865,7 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 		 * @param int   $form_id ID of the form submitted.
 		 * @return array
 		 */
-		public function checkview_disable_pdf_addon( $settings, $form_id ) {
+		public function checkview_disable_pdf_addon( $settings, $form_id ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
 
 			$settings['notification']       = '';
 			$settings['conditional']        = 1;
@@ -829,9 +894,9 @@ if ( ! class_exists( 'Checkview_Gforms_Helper' ) ) {
 		 * @param object $form Form object.
 		 * @return array
 		 */
-		public function checkview_disable_addons_feed( $feeds, $entry, $form ) {
-			$cv_test_id = get_checkview_test_id();
-			if ( $cv_test_id && 'true' == get_option( 'disable_actions_' . $cv_test_id, false ) ) {
+		public function checkview_disable_addons_feed( $feeds, $entry, $form ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- Hook signature.
+			$cv_test_id = checkview_get_test_id();
+			if ( $cv_test_id && 'true' === get_option( 'disable_actions_' . $cv_test_id, false ) ) {
 				if ( is_array( $feeds ) ) {
 					foreach ( $feeds as $feed ) {
 						if ( ! is_array( $feed ) ) {

@@ -75,7 +75,7 @@ class CheckView {
 	 * @return bool
 	 */
 	public static function is_checkview_dev(): bool {
-		return defined('CHECKVIEW_DEV') && CHECKVIEW_DEV;
+		return defined( 'CHECKVIEW_DEV' ) && CHECKVIEW_DEV;
 	}
 
 	/**
@@ -119,12 +119,12 @@ class CheckView {
 	/**
 	 * Extract a query parameter from a given URL.
 	 *
-	 * @param $url string URL.
-	 * @param $param string Parameter's key.
+	 * @param string $url URL.
+	 * @param string $param Parameter's key.
 	 *
 	 * @return string|null Parameter's value,
 	 */
-	public static function get_param( string $url, string $param): ?string {
+	public static function get_param( string $url, string $param ): ?string {
 		$params = array();
 		parse_str( $url, $params );
 		return sanitize_text_field( $params[ $param ] ?? '' );
@@ -133,7 +133,7 @@ class CheckView {
 	/**
 	 * Gets a query parameter from the current referrer.
 	 *
-	 * @param $param string Parameter's key.
+	 * @param string $param Parameter's key.
 	 *
 	 * @return string|null Parameter's value, or null if not found.
 	 */
@@ -181,6 +181,7 @@ class CheckView {
 	 * @return string|false Validated param value, or false.
 	 */
 	public static function test_type() {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only CheckView test param from SaaS request; no nonce possible.
 		$test_type = sanitize_text_field( wp_unslash( $_REQUEST[ self::PARAM_TEST_TYPE ] ?? '' ) );
 		if ( ! empty( $test_type ) ) {
 			return $test_type;
@@ -197,7 +198,7 @@ class CheckView {
 		// Fallback: plugin-set cookie persists test type across deep navigations
 		// (e.g. WooCommerce redirects, multi-step forms) where URL params and
 		// referer are both lost.
-		$cv_test_id = get_checkview_test_id();
+		$cv_test_id = checkview_get_test_id();
 		if ( ! empty( $cv_test_id ) && isset( $_COOKIE[ self::PARAM_TEST_TYPE ] ) ) {
 			$cookie_type = sanitize_text_field( wp_unslash( $_COOKIE[ self::PARAM_TEST_TYPE ] ) );
 			if ( ! empty( $cookie_type ) ) {
@@ -217,7 +218,7 @@ class CheckView {
 		$visitor_ip  = checkview_get_visitor_ip();
 		$cv_bot_ip   = checkview_get_api_ip();
 		$is_local    = checkview_is_local_environment();
-		$ip_verified = $is_local || ( is_array( $cv_bot_ip ) && in_array( $visitor_ip, $cv_bot_ip ) );
+		$ip_verified = $is_local || ( is_array( $cv_bot_ip ) && in_array( $visitor_ip, $cv_bot_ip, true ) );
 
 		// Unforgeable per-request signal: the CheckView test runner attaches a
 		// short-lived signed token (X-CheckView-Signature) that this verifies
@@ -241,11 +242,12 @@ class CheckView {
 		$verified       = $require_signed ? $sig_verified : ( $sig_verified || $ip_verified );
 
 		$test_type = self::test_type();
-		$result = $test_type && $verified;
+		$result    = $test_type && $verified;
 
-		// Only log during actual tests
+		// Only log during actual tests.
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only CheckView test param from SaaS request; no nonce possible.
 		if ( isset( $_REQUEST[ self::PARAM_TEST_ID ] ) && self::should_log_bot_check( $result ) ) {
-			// Sanitize for logging: remove control chars, limit length
+			// Sanitize for logging: remove control chars, limit length.
 			$sanitize = function ( $val, $max_len = 200 ) {
 				$str = preg_replace( '/[\x00-\x1F\x7F]/', '', strval( $val ) );
 				if ( null === $str ) {
@@ -255,16 +257,17 @@ class CheckView {
 				return ( strlen( $str ) > $max_len ) ? substr( $str, 0, $max_len ) . '...' : $str;
 			};
 
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only CheckView test param from SaaS request; no nonce possible.
 			$test_id         = substr( sanitize_text_field( wp_unslash( $_REQUEST[ self::PARAM_TEST_ID ] ) ), 0, 36 );
 			$safe_visitor_ip = $sanitize( $visitor_ip, 45 );
 
-			// Collect IP headers
+			// Collect IP headers.
 			$headers = array();
-			$cf      = $sanitize( isset( $_SERVER['HTTP_CF_CONNECTING_IP'] ) ? $_SERVER['HTTP_CF_CONNECTING_IP'] : '', 45 );
-			$xff     = $sanitize( isset( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ? $_SERVER['HTTP_X_FORWARDED_FOR'] : '', 100 );
-			$xri     = $sanitize( isset( $_SERVER['HTTP_X_REAL_IP'] ) ? $_SERVER['HTTP_X_REAL_IP'] : '', 45 );
-			$cli     = $sanitize( isset( $_SERVER['HTTP_CLIENT_IP'] ) ? $_SERVER['HTTP_CLIENT_IP'] : '', 45 );
-			$ra      = $sanitize( isset( $_SERVER['REMOTE_ADDR'] ) ? $_SERVER['REMOTE_ADDR'] : '', 45 );
+			$cf      = $sanitize( isset( $_SERVER['HTTP_CF_CONNECTING_IP'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_CF_CONNECTING_IP'] ) ) : '', 45 );
+			$xff     = $sanitize( isset( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ) : '', 100 );
+			$xri     = $sanitize( isset( $_SERVER['HTTP_X_REAL_IP'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_REAL_IP'] ) ) : '', 45 );
+			$cli     = $sanitize( isset( $_SERVER['HTTP_CLIENT_IP'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_CLIENT_IP'] ) ) : '', 45 );
+			$ra      = $sanitize( isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : '', 45 );
 
 			if ( $cf ) {
 				$headers[] = 'CF=[' . $cf . ']';
@@ -278,20 +281,23 @@ class CheckView {
 			if ( $cli ) {
 				$headers[] = 'CLI=[' . $cli . ']';
 			}
-			$headers[] = 'RA=[' . ( $ra ?: 'not set' ) . ']';
+			$headers[] = 'RA=[' . ( $ra ? $ra : 'not set' ) . ']';
 
-			Checkview_Admin_Logs::add( 'ip-logs', sprintf(
-				'Bot check %s [%s]: detected=[%s], %s, ip_ok=[%s], sig_ok=[%s], mode=[%s], whitelist=[%d IPs]%s',
-				$result ? 'PASSED' : 'FAILED',
-				$test_id,
-				$safe_visitor_ip ?: 'empty',
-				implode( ', ', $headers ),
-				$ip_verified ? 'yes' : 'no',
-				$sig_verified ? 'yes' : 'no',
-				$require_signed ? 'require-signed' : 'transitional',
-				is_array( $cv_bot_ip ) ? count( $cv_bot_ip ) : 0,
-				$is_local ? ', LOCAL_ENV' : ''
-			) );
+			Checkview_Admin_Logs::add(
+				'ip-logs',
+				sprintf(
+					'Bot check %s [%s]: detected=[%s], %s, ip_ok=[%s], sig_ok=[%s], mode=[%s], whitelist=[%d IPs]%s',
+					$result ? 'PASSED' : 'FAILED',
+					$test_id,
+					$safe_visitor_ip ? $safe_visitor_ip : 'empty',
+					implode( ', ', $headers ),
+					$ip_verified ? 'yes' : 'no',
+					$sig_verified ? 'yes' : 'no',
+					$require_signed ? 'require-signed' : 'transitional',
+					is_array( $cv_bot_ip ) ? count( $cv_bot_ip ) : 0,
+					$is_local ? ', LOCAL_ENV' : ''
+				)
+			);
 		}
 
 		return $result;
@@ -349,6 +355,7 @@ class CheckView {
 			return false;
 		}
 
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- JWT; validated by checkview_validate_jwt_token() below.
 		$header = trim( wp_unslash( $_SERVER['HTTP_X_CHECKVIEW_SIGNATURE'] ) );
 		if ( '' === $header ) {
 			return false;
@@ -377,19 +384,13 @@ class CheckView {
 	 * @access private
 	 */
 	private function load_dependencies() {
-		// WordPress Core
 		if ( ! function_exists( 'is_plugin_active' ) ) {
 			include_once ABSPATH . 'wp-admin/includes/plugin.php';
 		}
 
-		// WordPress Core
 		require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-base.php';
 		require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-direct.php';
-
-		// Vendor
 		require_once plugin_dir_path( __DIR__ ) . 'includes/vendor/autoload.php';
-
-		// CheckView
 		require_once plugin_dir_path( __DIR__ ) . 'includes/checkview-functions.php';
 		require_once plugin_dir_path( __DIR__ ) . 'includes/class-checkview-loader.php';
 		require_once plugin_dir_path( __DIR__ ) . 'admin/class-checkview-admin.php';
@@ -399,16 +400,7 @@ class CheckView {
 
 		$this->loader = new Checkview_Loader();
 
-		// Current visitor IP.
-		$visitor_ip = checkview_get_visitor_ip();
 		$woo_helper = '';
-		// Check view Bot IP.
-		$cv_bot_ip = checkview_get_api_ip();
-
-		// TODO: What is this for?
-		if ( ( 'checkview-saas' === get_option( $visitor_ip ) || isset( $_REQUEST[ self::PARAM_TEST_ID ] ) || ( is_array( $cv_bot_ip ) && in_array( $visitor_ip, $cv_bot_ip ) ) ) ) {
-			update_option( $visitor_ip, 'checkview-saas', true );
-		}
 
 		if ( class_exists( 'WooCommerce' ) ) {
 			require_once plugin_dir_path( __DIR__ ) . 'includes/woocommercehelper/class-checkview-woo-automated-testing.php';
@@ -557,9 +549,13 @@ class CheckView {
 
 			// Also dequeue turnstile in footer — Fluent Forms enqueues it
 			// during template rendering, which runs after wp_enqueue_scripts.
-			add_action( 'wp_print_footer_scripts', function () {
-				wp_dequeue_script( 'turnstile' );
-			}, 1 );
+			add_action(
+				'wp_print_footer_scripts',
+				function () {
+					wp_dequeue_script( 'turnstile' );
+				},
+				1
+			);
 
 			$this->loader->add_action(
 				'pre_option_require_name_email',
@@ -586,7 +582,8 @@ class CheckView {
 					$cv_used_nonces = $wpdb->prefix . 'cv_used_nonces';
 
 					$charset_collate = $wpdb->get_charset_collate();
-					if ( $wpdb->get_var( "SHOW TABLES LIKE '{$cv_used_nonces}'" ) !== $cv_used_nonces ) {
+					if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $cv_used_nonces ) ) !== $cv_used_nonces ) {
+						// phpcs:ignore WordPress.DB.DirectDatabaseQuery.SchemaChange -- Plugin-owned table.
 						$sql = "CREATE TABLE IF NOT EXISTS $cv_used_nonces (
 								id BIGINT(20) NOT NULL AUTO_INCREMENT,
 								nonce VARCHAR(255) NOT NULL,
