@@ -1,9 +1,9 @@
 <?php return array(
     'root' => array(
         'name' => 'checkview/checkview',
-        'pretty_version' => 'v2.6.0',
-        'version' => '2.6.0.0',
-        'reference' => 'bbada7ef5b5fc9ebdc54b4862dcb4b6950d8a6c5',
+        'pretty_version' => 'v2.6.1',
+        'version' => '2.6.1.0',
+        'reference' => '4288c87de5fa3247018a5d29e3c427edd93f0353',
         'type' => 'wordpress-plugin',
         'install_path' => __DIR__ . '/../../../',
         'aliases' => array(),
@@ -11,9 +11,9 @@
     ),
     'versions' => array(
         'checkview/checkview' => array(
-            'pretty_version' => 'v2.6.0',
-            'version' => '2.6.0.0',
-            'reference' => 'bbada7ef5b5fc9ebdc54b4862dcb4b6950d8a6c5',
+            'pretty_version' => 'v2.6.1',
+            'version' => '2.6.1.0',
+            'reference' => '4288c87de5fa3247018a5d29e3c427edd93f0353',
             'type' => 'wordpress-plugin',
             'install_path' => __DIR__ . '/../../../',
             'aliases' => array(),

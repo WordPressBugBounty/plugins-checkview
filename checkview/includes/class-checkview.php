@@ -374,6 +374,40 @@ class CheckView {
 	}
 
 	/**
+	 * Whether the request carries a CheckView signature header at all.
+	 *
+	 * A presence check for callers that run before the helper has loaded what
+	 * is_bot() needs, so they can skip that load for ordinary visitors.
+	 * Presence is not validity: is_bot() decides that.
+	 *
+	 * @since 2.6.1
+	 *
+	 * @return bool
+	 */
+	public static function has_signature_header(): bool {
+		return ! empty( $_SERVER['HTTP_X_CHECKVIEW_SIGNATURE'] );
+	}
+
+	/**
+	 * Keeps a test's response out of page caches.
+	 *
+	 * A test page differs from what ordinary visitors should receive, and a
+	 * cache that ignores the query string would serve them that copy.
+	 *
+	 * @since 2.6.1
+	 *
+	 * @return void
+	 */
+	private static function disable_page_cache(): void {
+		if ( ! defined( 'DONOTCACHEPAGE' ) ) {
+			// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals -- WordPress constant.
+			define( 'DONOTCACHEPAGE', true );
+		}
+
+		nocache_headers();
+	}
+
+	/**
 	 * Loads plugin dependencies.
 	 *
 	 * Loads WordPress Core dependenceis, vendor files, and CheckView classes.
@@ -513,6 +547,8 @@ class CheckView {
 		}
 
 		if ( self::is_bot() ) {
+			self::disable_page_cache();
+
 			do_action( 'checkview_before_init_current_test' );
 
 			$this->loader->add_action(

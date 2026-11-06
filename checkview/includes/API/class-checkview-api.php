@@ -1236,15 +1236,21 @@ class CheckView_Api {
 			$tablename = $wpdb->prefix . 'gf_form';
 			$results   = $wpdb->get_results( $wpdb->prepare( 'Select * from %i where is_active=%d and is_trash=%d order by ID ASC', $tablename, 1, 0 ) );
 			if ( $results ) {
+				// Gravity Forms creates this table only once a feed add-on registers.
+				// wpdb prints query errors with WP_DEBUG_DISPLAY on, whatever
+				// display_errors says, and that output would break this JSON response.
+				$feed_table     = $wpdb->prefix . 'gf_addon_feed';
+				$has_feed_table = null !== $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $feed_table ) ) );
 				foreach ( $results as $row ) {
 					$forms['GravityForms'][ $row->id ] = array(
 						'ID'   => $row->id,
 						'Name' => $row->title,
 					);
-					$tablename                         = $wpdb->prefix . 'gf_addon_feed';
-					$addons                            = $wpdb->get_results( $wpdb->prepare( 'Select * from %i where is_active=%d and form_id=%d', $tablename, 1, $row->id ) );
-					foreach ( $addons as $addon ) {
-						$forms['GravityForms'][ $row->id ]['addons'][] = $addon->addon_slug;
+					if ( $has_feed_table ) {
+						$addons = $wpdb->get_results( $wpdb->prepare( 'Select * from %i where is_active=%d and form_id=%d', $feed_table, 1, $row->id ) );
+						foreach ( $addons as $addon ) {
+							$forms['GravityForms'][ $row->id ]['addons'][] = $addon->addon_slug;
+						}
 					}
 					// Gravity Forms registers BOTH `[gravityform]` and
 					// `[gravityforms]` to the same callback
@@ -1548,23 +1554,28 @@ class CheckView_Api {
 			 *   parent_form_id IN ( NULL, 0 )    child forms are the inner form of
 			 *                                    a repeater/embedded field and are
 			 *                                    only submitted via their parent
-			 *   status IN ( NULL, '', published )
 			 *
-			 * That last one widens the previous `status = 'published'`: Formidable
-			 * treats NULL and '' as published, so forms whose status column was
-			 * never populated were silently absent from the list.
+			 * Status is narrower than upstream on purpose. get_published_forms()
+			 * also returns NULL and '' status, but Formidable only renders the
+			 * submit button when status is exactly 'published' (FrmForm.php:1332),
+			 * so a flow on any other form can never submit and fails setup.
 			 */
 			if ( is_callable( array( 'FrmForm', 'get_published_forms' ) ) ) {
 				// Default limit is 999; pass a higher one so large sites are not
 				// silently truncated.
-				$results = FrmForm::get_published_forms( array(), 999999 );
+				$results = array_filter(
+					(array) FrmForm::get_published_forms( array(), 999999 ),
+					static function ( $form ) {
+						return 'published' === $form->status;
+					}
+				);
 			} else {
 				$results = $wpdb->get_results(
 					$wpdb->prepare(
-						"SELECT * FROM %i
+						'SELECT * FROM %i
 						WHERE is_template = %d
-						AND ( status IS NULL OR status = '' OR status = %s )
-						AND ( parent_form_id IS NULL OR parent_form_id = %d )",
+						AND status = %s
+						AND ( parent_form_id IS NULL OR parent_form_id = %d )',
 						$tablename,
 						0,
 						'published',
